@@ -1,0 +1,39 @@
+name: Daily Argentina News Digest
+
+on:
+  schedule:
+    # 12:00 UTC = 09:00 Buenos Aires (UTC-3)
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TOTAL_LIMIT: "5"
+          PER_FEED_SCAN: "10"
+          MAX_SUMMARY_CHARS: "280"
+        run: python bot.py
+
+      - name: Commit state
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add state.json || true
+          git commit -m "Update state" || true
+          git push || true
