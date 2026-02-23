@@ -1,8 +1,14 @@
 import os, json, time, re
+from collections import defaultdict
+from typing import Optional
+
 import feedparser
 import requests
 from dateutil import parser as dtparser
 from openai import OpenAI
+
+
+# ----------------- ENV / CLIENT -----------------
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHANNEL = os.environ["TELEGRAM_CHANNEL"]
@@ -11,90 +17,84 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY is empty. Check GitHub Secrets.")
 
-# Groq — OpenAI-compatible endpoint
 client = OpenAI(
     api_key=GROQ_API_KEY,
     base_url="https://api.groq.com/openai/v1",
 )
 
-TOTAL_LIMIT = int(os.environ.get("TOTAL_LIMIT", "5"))
-PER_FEED_SCAN = int(os.environ.get("PER_FEED_SCAN", "10"))
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+
+TOTAL_LIMIT = int(os.environ.get("TOTAL_LIMIT", "10"))         # сколько новостей взять всего (до рубрик)
+PER_FEED_SCAN = int(os.environ.get("PER_FEED_SCAN", "15"))     # сколько записей читать из каждого RSS
 MAX_SUMMARY_CHARS = int(os.environ.get("MAX_SUMMARY_CHARS", "280"))
+
+HOT_HOURS = int(os.environ.get("HOT_HOURS", "6"))
+HOT_MAX = int(os.environ.get("HOT_MAX", "2"))
+MAX_PER_RUBRIC = int(os.environ.get("MAX_PER_RUBRIC", "2"))
+
+ARG_FILTER = os.environ.get("ARG_FILTER", "1") == "1"          # 1 = строго Аргентина
 
 FEEDS_FILE = "feeds.json"
 STATE_FILE = "state.json"
-from collections import defaultdict
 
-# --- РУБРИКИ / ГОРЯЧЕЕ ---
+HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "20"))       # таймаут на загрузку страниц (для og:image)
 
-HOT_HOURS = int(os.environ.get("HOT_HOURS", "6"))  # сколько часов считаем "горячим"
-MAX_PER_RUBRIC = int(os.environ.get("MAX_PER_RUBRIC", "2"))  # максимум новостей в рубрике за пост
-HOT_MAX = int(os.environ.get("HOT_MAX", "2"))  # максимум "горячих" за пост
+# ----------------- RUBRICS -----------------
 
 RUBRICS = {
-    # Служебная рубрика: попадание сюда = горячее
     "🔥 Горячее": [
         "urgente", "último momento", "ultima hora", "en vivo", "ahora", "breaking",
         "alerta", "se confirmó", "confirmó", "confirmaron"
     ],
-
+    "💰 Экономика": [
+        "economía", "economia", "inflación", "inflacion", "ipc", "índice", "indice", "indec",
+        "recesión", "recesion", "dólar", "dolar", "blue", "mep", "ccl", "reservas",
+        "banco central", "bcr", "bcra", "fmi", "deuda", "bonos", "mercados",
+        "riesgo país", "riesgo pais", "tasas", "exportaciones", "importaciones",
+        "subsidios", "tarifas", "salarios", "paritarias", "pymes", "impuestos",
+        "retenciones", "cepo", "devaluación", "devaluacion"
+    ],
     "🏛 Политика": [
         "milei", "presidente", "gobierno", "gabinete", "casa rosada", "jefe de gabinete",
-        "congreso", "senado", "diputados", "ley", "decreto", "dnu", "boletín oficial",
-        "oposición", "peronismo", "kirchnerismo", "cambiemos", "pro", "ucr", "lilia lemoine",
-        "kicillof", "massa", "bullrich", "macri", "larreta", "patricia bullrich",
-        "elecciones", "balotaje", "campaña"
+        "congreso", "senado", "diputados", "ley", "decreto", "dnu", "boletín oficial", "boletin oficial",
+        "oposición", "oposicion", "peronismo", "kirchnerismo", "pro", "ucr",
+        "kicillof", "massa", "bullrich", "macri", "larreta", "elecciones", "balotaje", "campaña"
     ],
-
-    "💰 Экономика": [
-        "economía", "inflación", "inflacion", "ipc", "índice", "indec", "recesión", "recesion",
-        "dólar", "dolar", "blue", "mep", "ccl", "reservas", "banco central", "bcr", "bCRA",
-        "fmi", "deuda", "bonos", "mercados", "riesgo país", "riesgo pais", "tasas",
-        "exportaciones", "importaciones", "subsidios", "tarifas", "salarios", "paritarias",
-        "pymes", "impuestos", "retenciones", "cepo", "devaluación", "devaluacion"
+    "🏢 Бизнес / компании": [
+        "empresa", "empresas", "negocio", "negocios", "inversión", "inversion",
+        "startup", "fintech", "banco", "bancos", "mercado libre", "ypf",
+        "telecom", "personal", "movistar", "claro", "aerolíneas", "aerolineas",
+        "industria", "comercio"
     ],
-
     "⚖️ Суд / безопасность": [
         "policía", "policia", "crimen", "delito", "robo", "homicidio", "asesinato",
         "detenido", "detuvieron", "allanamiento", "operativo", "narco", "drogas",
         "juez", "jueza", "fiscal", "tribunal", "causa", "condena", "juicio",
         "seguridad", "gendarmería", "gendarmeria", "prefectura"
     ],
-
     "🌎 Общество": [
         "salud", "hospital", "educación", "educacion", "escuela", "universidad",
         "paro", "huelga", "sindicato", "cgt", "protesta", "marcha",
-        "transporte", "subte", "colectivo", "tren", "aerolineas",
-        "vivienda", "alquiler", "inmuebles", "corte", "piquete",
-        "servicios", "luz", "gas", "agua", "seguro", "anmat"
+        "transporte", "subte", "colectivo", "tren", "vivienda", "alquiler",
+        "inmuebles", "piquete", "servicios", "luz", "gas", "agua", "anmat"
     ],
-
-    "🏢 Бизнес / компании": [
-        "empresa", "empresas", "negocio", "negocios", "inversión", "inversion",
-        "startup", "fintech", "banco", "bancos", "mercado libre", "ypf",
-        "telecom", "personal", "movistar", "claro", "aerolíneas", "aerolineas",
-        "exportador", "importador", "industria", "comercio"
-    ],
-
     "🧪 Наука / технологии": [
         "tecnología", "tecnologia", "ia", "inteligencia artificial", "software",
-        "ciber", "ciberseguridad", "hack", "datos", "internet", "satélite", "satelite",
+        "ciber", "ciberseguridad", "datos", "internet", "satélite", "satelite",
         "investigación", "investigacion", "conicet"
     ],
-
     "🌦 Погода / ЧС": [
-        "tormenta", "lluvia", "granizo", "ola de calor", "ola de frio", "inundación", "inundacion",
-        "alerta meteorológica", "alerta meteorologica", "evacuados", "incendio", "sismo"
+        "tormenta", "lluvia", "granizo", "ola de calor", "ola de frio",
+        "inundación", "inundacion", "alerta meteorológica", "alerta meteorologica",
+        "evacuados", "incendio", "sismo"
     ],
-
     "🎭 Культура": [
-        "cultura", "cine", "teatro", "música", "musica", "festival", "libro", "feria del libro",
-        "arte", "exposición", "exposicion", "concierto"
+        "cultura", "cine", "teatro", "música", "musica", "festival", "libro",
+        "feria del libro", "arte", "exposición", "exposicion", "concierto"
     ],
-
     "⚽ Спорт": [
         "fútbol", "futbol", "river", "boca", "selección", "seleccion", "messi",
-        "copa", "liga", "mundial", "aFA", "racing", "independiente", "san lorenzo"
+        "copa", "liga", "mundial", "afa", "racing", "independiente", "san lorenzo"
     ],
 }
 
@@ -111,8 +111,6 @@ RUBRIC_ORDER = [
     "⚽ Спорт",
 ]
 
-# Если хочешь строго "только про Аргентину" — оставь включённым
-ARG_FILTER = os.environ.get("ARG_FILTER", "1") == "1"
 ARG_HINTS = [
     "argentina", "argentino", "buenos aires", "caba", "amba",
     "córdoba", "cordoba", "rosario", "mendoza", "la plata",
@@ -120,29 +118,8 @@ ARG_HINTS = [
     "milei", "casa rosada", "congreso", "banco central", "indec",
 ]
 
-def is_argentina_related(title: str, summary: str, link: str = "") -> bool:
-    if not ARG_FILTER:
-        return True
-    t = (title + " " + summary + " " + (link or "")).lower()
-    return any(h in t for h in ARG_HINTS)
 
-def is_hot(ts: float, title: str, summary: str) -> bool:
-    if (time.time() - ts) <= HOT_HOURS * 3600:
-        return True
-    t = (title + " " + summary).lower()
-    return any(w in t for w in RUBRICS["🔥 Горячее"])
-
-def detect_rubric(ts: float, title: str, summary: str) -> str:
-    if is_hot(ts, title, summary):
-        return "🔥 Горячее"
-    t = (title + " " + summary).lower()
-    for rubric in RUBRIC_ORDER:
-        if rubric == "🔥 Горячее":
-            continue
-        keys = RUBRICS.get(rubric, [])
-        if any(k in t for k in keys):
-            return rubric
-    return "🌎 Общество"
+# ----------------- JSON / TELEGRAM -----------------
 
 def load_json(path, default):
     try:
@@ -172,8 +149,32 @@ def tg_send_message(text: str):
     r.raise_for_status()
 
 
+def tg_send_photo(photo_url: str, caption: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    r = requests.post(
+        url,
+        data={
+            "chat_id": TELEGRAM_CHANNEL,
+            "photo": photo_url,
+            "caption": caption,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+
+
+# ----------------- HELPERS -----------------
+
 def html_escape(s: str) -> str:
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def clean_text(s: str) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
 
 
 def pick_time(entry) -> float:
@@ -186,27 +187,124 @@ def pick_time(entry) -> float:
     return time.time()
 
 
-def clean_text(s: str) -> str:
-    s = (s or "").strip()
-    s = re.sub(r"\s+", " ", s)
-    return s
+def is_argentina_related(title: str, summary: str, link: str = "") -> bool:
+    if not ARG_FILTER:
+        return True
+    t = (title + " " + summary + " " + (link or "")).lower()
+    return any(h in t for h in ARG_HINTS)
 
+
+def is_hot(ts: float, title: str, summary: str) -> bool:
+    if (time.time() - ts) <= HOT_HOURS * 3600:
+        return True
+    t = (title + " " + summary).lower()
+    return any(w in t for w in RUBRICS["🔥 Горячее"])
+
+
+def detect_rubric(ts: float, title: str, summary: str) -> str:
+    if is_hot(ts, title, summary):
+        return "🔥 Горячее"
+    t = (title + " " + summary).lower()
+    for rubric in RUBRIC_ORDER:
+        if rubric == "🔥 Горячее":
+            continue
+        keys = RUBRICS.get(rubric, [])
+        if any(k in t for k in keys):
+            return rubric
+    return "🌎 Общество"
+
+
+# ----------------- IMAGE EXTRACTION (RSS -> HTML og:image) -----------------
+
+UA = "Mozilla/5.0 (compatible; ArgentinaDigestBot/1.0; +https://github.com/)"
+
+def extract_image_from_rss(entry) -> Optional[str]:
+    # 1) media:content
+    if hasattr(entry, "media_content"):
+        try:
+            for m in entry.media_content:
+                u = m.get("url")
+                if u:
+                    return u
+        except Exception:
+            pass
+
+    # 2) links/enclosures
+    if hasattr(entry, "links"):
+        try:
+            for l in entry.links:
+                href = l.get("href")
+                ltype = (l.get("type") or "").lower()
+                rel = (l.get("rel") or "").lower()
+                if href and (ltype.startswith("image/") or rel == "enclosure"):
+                    return href
+        except Exception:
+            pass
+
+    # 3) img src in summary html
+    summary = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
+    m = re.search(r'<img[^>]+src="([^"]+)"', summary)
+    if m:
+        return m.group(1)
+
+    return None
+
+
+def extract_og_image_from_html(url: str) -> Optional[str]:
+    try:
+        r = requests.get(
+            url,
+            headers={"User-Agent": UA},
+            timeout=HTTP_TIMEOUT,
+            allow_redirects=True,
+        )
+        if r.status_code >= 400:
+            return None
+        html = r.text
+    except Exception:
+        return None
+
+    # ищем og:image, twitter:image
+    # (делаем простым regex без bs4, чтобы не добавлять зависимостей)
+    patterns = [
+        r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+        r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']twitter:image["\']',
+    ]
+    for p in patterns:
+        m = re.search(p, html, flags=re.IGNORECASE)
+        if m:
+            img = m.group(1).strip()
+            if img.startswith("//"):
+                img = "https:" + img
+            return img
+
+    return None
+
+
+def best_image(entry, link: str) -> Optional[str]:
+    img = extract_image_from_rss(entry)
+    if img:
+        return img
+    # fallback: HTML og:image
+    return extract_og_image_from_html(link)
+
+
+# ----------------- GROQ SUMMARIZER -----------------
 
 def _call_groq_chat(messages, model: str, max_retries: int = 3):
-    # простой ретрай на временные ошибки/лимиты
     for attempt in range(max_retries):
         try:
             return client.chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=0.2,
+                max_tokens=320,
             )
         except Exception as e:
             msg = str(e)
-            # грубая эвристика: 429/5xx/timeout
-            if attempt < max_retries - 1 and (
-                "429" in msg or "Rate limit" in msg or "timeout" in msg or "5" in msg
-            ):
+            if attempt < max_retries - 1 and ("429" in msg or "Rate limit" in msg or "timeout" in msg or "5" in msg):
                 time.sleep(1.5 * (attempt + 1))
                 continue
             raise
@@ -218,18 +316,14 @@ def summarize_to_ru(title: str, snippet: str) -> str:
 
     base = f"Заголовок: {title}\nТекст: {snippet}" if snippet else f"Заголовок: {title}"
 
-    # ✅ Groq модели (выбери одну):
-    # - "llama-3.3-70b-versatile" (лучше качество, медленнее/дороже)
-    # - "llama-3.1-8b-instant"   (быстрее/дешевле)
-    model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
-
     resp = _call_groq_chat(
-        model=model,
+        model=GROQ_MODEL,
         messages=[
             {
                 "role": "system",
                 "content": (
-                    "Ты редактор новостей. Сформулируй краткую выжимку на русском языке. "
+                    "Ты редактор новостей. Входной текст на испанском (Аргентина). "
+                    "Сделай краткую выжимку на русском языке. "
                     "Стиль: нейтральный, фактологичный, без оценки и клише. "
                     "Длина: 1–2 предложения. Не добавляй фактов, которых нет во входном тексте."
                 ),
@@ -244,6 +338,8 @@ def summarize_to_ru(title: str, snippet: str) -> str:
         text = text[: MAX_SUMMARY_CHARS - 1].rstrip() + "…"
     return text
 
+
+# ----------------- MAIN -----------------
 
 def main():
     feeds = load_json(FEEDS_FILE, [])
@@ -268,7 +364,11 @@ def main():
                 continue
 
             ts = pick_time(e)
-            entries.append((ts, name, title, link, summary))
+
+            # картинка: RSS -> HTML og:image
+            image_url = best_image(e, link)
+
+            entries.append((ts, name, title, link, summary, image_url))
 
         entries.sort(key=lambda x: x[0], reverse=True)
         candidates.extend(entries)
@@ -279,16 +379,14 @@ def main():
     if not picked:
         tg_send_message("Сегодня новых новостей по выбранным источникам не нашёл.")
         return
-    # --- группировка по рубрикам + лимиты на рубрику ---
-    grouped = defaultdict(list)
 
-    for ts, source, title, link, summary in picked:
+    grouped = defaultdict(list)
+    for ts, source, title, link, summary, image_url in picked:
         if not is_argentina_related(title, summary, link):
             continue
         rubric = detect_rubric(ts, title, summary)
-        grouped[rubric].append((ts, source, title, link, summary))
+        grouped[rubric].append((ts, source, title, link, summary, image_url))
 
-    # Если после ARG-фильтра ничего не осталось — сообщаем
     if not any(grouped.values()):
         tg_send_message("Сегодня по выбранным источникам не нашёл новостей про Аргентину.")
         return
@@ -296,7 +394,6 @@ def main():
     lines = ["<b>Аргентина — ежедневная выжимка</b>\n"]
     new_links = []
 
-    # отдельные лимиты для "горячих" и остальных
     hot_left = HOT_MAX
 
     for rubric in RUBRIC_ORDER:
@@ -304,7 +401,6 @@ def main():
         if not items:
             continue
 
-        # сортируем внутри рубрики по свежести
         items.sort(key=lambda x: x[0], reverse=True)
 
         if rubric == "🔥 Горячее":
@@ -317,9 +413,12 @@ def main():
 
         lines.append(f"<b>{html_escape(rubric)}</b>")
 
-        for ts, source, title, link, summary in items:
+        for ts, source, title, link, summary, image_url in items:
             ru = summarize_to_ru(title, summary)
-            lines.append(f"• <a href=\"{html_escape(link)}\">{html_escape(title)}</a> <i>({html_escape(source)})</i>")
+            lines.append(
+                f"• <a href=\"{html_escape(link)}\">{html_escape(title)}</a> "
+                f"<i>({html_escape(source)})</i>"
+            )
             if ru:
                 lines.append(f"  {html_escape(ru)}")
             new_links.append(link)
@@ -330,10 +429,27 @@ def main():
     if len(text) > 3800:
         text = text[:3790] + "…"
 
-    tg_send_message(text)
+    # ---- Variant B: one lead image ----
+    lead_image = None
+    for ts, source, title, link, summary, image_url in picked:
+        if image_url:
+            lead_image = image_url
+            break
+
+    if lead_image:
+        # caption limit ~1024, оставим запас
+        if len(text) <= 950:
+            tg_send_photo(lead_image, text)
+        else:
+            short_caption = "<b>Аргентина — ежедневная выжимка</b>\n\nСводка ниже 👇"
+            tg_send_photo(lead_image, short_caption)
+            tg_send_message(text)
+    else:
+        tg_send_message(text)
 
     state["seen_links"] = (state.get("seen_links", []) + new_links)[-2000:]
     save_json(STATE_FILE, state)
+
 
 if __name__ == "__main__":
     main()
