@@ -20,12 +20,6 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      - name: Test Telegram posting
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
-        run: python test_telegram.py
-
       - name: Run bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
