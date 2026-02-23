@@ -39,7 +39,7 @@ HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "20"))       # таймаут 
 
 # Адаптивное число новостей в посте
 MIN_NEWS = int(os.environ.get("MIN_NEWS", "2"))
-MAX_NEWS = int(os.environ.get("MAX_NEWS", "6"))
+MAX_NEWS = int(os.environ.get("MAX_NEWS", "5"))
 
 
 # ----------------- RUBRICS -----------------
