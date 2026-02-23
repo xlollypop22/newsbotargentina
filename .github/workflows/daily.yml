@@ -27,14 +27,29 @@ jobs:
           python -c "import openai; print('openai version:', openai.__version__)"
           python -c "import httpx; print('httpx version:', httpx.__version__)"
           
+      - name: Network check (OpenAI)
+        run: |
+          python - << 'PY'
+          import socket
+          host="api.openai.com"
+          try:
+            print("DNS:", socket.gethostbyname(host))
+            print("OK: DNS resolves")
+          except Exception as e:
+            print("DNS FAIL:", e)
+            raise
+          PY  
       - name: Run bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          TOTAL_LIMIT: "5"
-          PER_FEED_SCAN: "10"
-          MAX_SUMMARY_CHARS: "280"
+          HTTP_PROXY: ""
+          HTTPS_PROXY: ""
+          http_proxy: ""
+          https_proxy: ""
+          NO_PROXY: ""
+          no_proxy: ""
         run: python bot.py
 
       - name: Commit state
