@@ -23,7 +23,126 @@ MAX_SUMMARY_CHARS = int(os.environ.get("MAX_SUMMARY_CHARS", "280"))
 
 FEEDS_FILE = "feeds.json"
 STATE_FILE = "state.json"
+from collections import defaultdict
 
+# --- РУБРИКИ / ГОРЯЧЕЕ ---
+
+HOT_HOURS = int(os.environ.get("HOT_HOURS", "6"))  # сколько часов считаем "горячим"
+MAX_PER_RUBRIC = int(os.environ.get("MAX_PER_RUBRIC", "2"))  # максимум новостей в рубрике за пост
+HOT_MAX = int(os.environ.get("HOT_MAX", "2"))  # максимум "горячих" за пост
+
+RUBRICS = {
+    # Служебная рубрика: попадание сюда = горячее
+    "🔥 Горячее": [
+        "urgente", "último momento", "ultima hora", "en vivo", "ahora", "breaking",
+        "alerta", "se confirmó", "confirmó", "confirmaron"
+    ],
+
+    "🏛 Политика": [
+        "milei", "presidente", "gobierno", "gabinete", "casa rosada", "jefe de gabinete",
+        "congreso", "senado", "diputados", "ley", "decreto", "dnu", "boletín oficial",
+        "oposición", "peronismo", "kirchnerismo", "cambiemos", "pro", "ucr", "lilia lemoine",
+        "kicillof", "massa", "bullrich", "macri", "larreta", "patricia bullrich",
+        "elecciones", "balotaje", "campaña"
+    ],
+
+    "💰 Экономика": [
+        "economía", "inflación", "inflacion", "ipc", "índice", "indec", "recesión", "recesion",
+        "dólar", "dolar", "blue", "mep", "ccl", "reservas", "banco central", "bcr", "bCRA",
+        "fmi", "deuda", "bonos", "mercados", "riesgo país", "riesgo pais", "tasas",
+        "exportaciones", "importaciones", "subsidios", "tarifas", "salarios", "paritarias",
+        "pymes", "impuestos", "retenciones", "cepo", "devaluación", "devaluacion"
+    ],
+
+    "⚖️ Суд / безопасность": [
+        "policía", "policia", "crimen", "delito", "robo", "homicidio", "asesinato",
+        "detenido", "detuvieron", "allanamiento", "operativo", "narco", "drogas",
+        "juez", "jueza", "fiscal", "tribunal", "causa", "condena", "juicio",
+        "seguridad", "gendarmería", "gendarmeria", "prefectura"
+    ],
+
+    "🌎 Общество": [
+        "salud", "hospital", "educación", "educacion", "escuela", "universidad",
+        "paro", "huelga", "sindicato", "cgt", "protesta", "marcha",
+        "transporte", "subte", "colectivo", "tren", "aerolineas",
+        "vivienda", "alquiler", "inmuebles", "corte", "piquete",
+        "servicios", "luz", "gas", "agua", "seguro", "anmat"
+    ],
+
+    "🏢 Бизнес / компании": [
+        "empresa", "empresas", "negocio", "negocios", "inversión", "inversion",
+        "startup", "fintech", "banco", "bancos", "mercado libre", "ypf",
+        "telecom", "personal", "movistar", "claro", "aerolíneas", "aerolineas",
+        "exportador", "importador", "industria", "comercio"
+    ],
+
+    "🧪 Наука / технологии": [
+        "tecnología", "tecnologia", "ia", "inteligencia artificial", "software",
+        "ciber", "ciberseguridad", "hack", "datos", "internet", "satélite", "satelite",
+        "investigación", "investigacion", "conicet"
+    ],
+
+    "🌦 Погода / ЧС": [
+        "tormenta", "lluvia", "granizo", "ola de calor", "ola de frio", "inundación", "inundacion",
+        "alerta meteorológica", "alerta meteorologica", "evacuados", "incendio", "sismo"
+    ],
+
+    "🎭 Культура": [
+        "cultura", "cine", "teatro", "música", "musica", "festival", "libro", "feria del libro",
+        "arte", "exposición", "exposicion", "concierto"
+    ],
+
+    "⚽ Спорт": [
+        "fútbol", "futbol", "river", "boca", "selección", "seleccion", "messi",
+        "copa", "liga", "mundial", "aFA", "racing", "independiente", "san lorenzo"
+    ],
+}
+
+RUBRIC_ORDER = [
+    "🔥 Горячее",
+    "💰 Экономика",
+    "🏛 Политика",
+    "🏢 Бизнес / компании",
+    "⚖️ Суд / безопасность",
+    "🌎 Общество",
+    "🧪 Наука / технологии",
+    "🌦 Погода / ЧС",
+    "🎭 Культура",
+    "⚽ Спорт",
+]
+
+# Если хочешь строго "только про Аргентину" — оставь включённым
+ARG_FILTER = os.environ.get("ARG_FILTER", "1") == "1"
+ARG_HINTS = [
+    "argentina", "argentino", "buenos aires", "caba", "amba",
+    "córdoba", "cordoba", "rosario", "mendoza", "la plata",
+    "santa fe", "tucumán", "tucuman", "salta", "neuquén", "neuquen",
+    "milei", "casa rosada", "congreso", "banco central", "indec",
+]
+
+def is_argentina_related(title: str, summary: str, link: str = "") -> bool:
+    if not ARG_FILTER:
+        return True
+    t = (title + " " + summary + " " + (link or "")).lower()
+    return any(h in t for h in ARG_HINTS)
+
+def is_hot(ts: float, title: str, summary: str) -> bool:
+    if (time.time() - ts) <= HOT_HOURS * 3600:
+        return True
+    t = (title + " " + summary).lower()
+    return any(w in t for w in RUBRICS["🔥 Горячее"])
+
+def detect_rubric(ts: float, title: str, summary: str) -> str:
+    if is_hot(ts, title, summary):
+        return "🔥 Горячее"
+    t = (title + " " + summary).lower()
+    for rubric in RUBRIC_ORDER:
+        if rubric == "🔥 Горячее":
+            continue
+        keys = RUBRICS.get(rubric, [])
+        if any(k in t for k in keys):
+            return rubric
+    return "🌎 Общество"
 
 def load_json(path, default):
     try:
@@ -160,18 +279,52 @@ def main():
     if not picked:
         tg_send_message("Сегодня новых новостей по выбранным источникам не нашёл.")
         return
+    # --- группировка по рубрикам + лимиты на рубрику ---
+    grouped = defaultdict(list)
+
+    for ts, source, title, link, summary in picked:
+        if not is_argentina_related(title, summary, link):
+            continue
+        rubric = detect_rubric(ts, title, summary)
+        grouped[rubric].append((ts, source, title, link, summary))
+
+    # Если после ARG-фильтра ничего не осталось — сообщаем
+    if not any(grouped.values()):
+        tg_send_message("Сегодня по выбранным источникам не нашёл новостей про Аргентину.")
+        return
 
     lines = ["<b>Аргентина — ежедневная выжимка</b>\n"]
     new_links = []
 
-    for ts, source, title, link, summary in picked:
-        ru = summarize_to_ru(title, summary)
-        lines.append(f"<b>{html_escape(source)}</b>")
-        lines.append(f"• <a href=\"{html_escape(link)}\">{html_escape(title)}</a>")
-        if ru:
-            lines.append(f"  {html_escape(ru)}")
+    # отдельные лимиты для "горячих" и остальных
+    hot_left = HOT_MAX
+
+    for rubric in RUBRIC_ORDER:
+        items = grouped.get(rubric, [])
+        if not items:
+            continue
+
+        # сортируем внутри рубрики по свежести
+        items.sort(key=lambda x: x[0], reverse=True)
+
+        if rubric == "🔥 Горячее":
+            items = items[:hot_left]
+            hot_left -= len(items)
+            if not items:
+                continue
+        else:
+            items = items[:MAX_PER_RUBRIC]
+
+        lines.append(f"<b>{html_escape(rubric)}</b>")
+
+        for ts, source, title, link, summary in items:
+            ru = summarize_to_ru(title, summary)
+            lines.append(f"• <a href=\"{html_escape(link)}\">{html_escape(title)}</a> <i>({html_escape(source)})</i>")
+            if ru:
+                lines.append(f"  {html_escape(ru)}")
+            new_links.append(link)
+
         lines.append("")
-        new_links.append(link)
 
     text = "\n".join(lines).strip()
     if len(text) > 3800:
@@ -181,7 +334,6 @@ def main():
 
     state["seen_links"] = (state.get("seen_links", []) + new_links)[-2000:]
     save_json(STATE_FILE, state)
-
 
 if __name__ == "__main__":
     main()
