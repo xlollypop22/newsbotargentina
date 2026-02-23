@@ -1,10 +1,42 @@
 [
   {
-    "name": "Infobae",
+    "name": "Infobae (Argentina - portada)",
     "url": "https://www.infobae.com/feeds/rss/"
   },
   {
-    "name": "La Nación",
+    "name": "La Nación (Argentina - portada)",
     "url": "https://www.lanacion.com.ar/arc/outboundfeeds/rss/"
+  },
+  {
+    "name": "Página/12 (Argentina)",
+    "url": "https://www.pagina12.com.ar/rss"
+  },
+  {
+    "name": "Ámbito (Economía/Finanzas)",
+    "url": "https://www.ambito.com/rss/pages/ambito_finanzas.xml"
+  },
+  {
+    "name": "El Cronista (Negocios)",
+    "url": "https://www.cronista.com/files/rss/news.xml"
+  },
+  {
+    "name": "Clarín (Portada)",
+    "url": "https://www.clarin.com/rss.html"
+  },
+  {
+    "name": "TN (Argentina)",
+    "url": "https://tn.com.ar/rss/"
+  },
+  {
+    "name": "C5N (Argentina)",
+    "url": "https://www.c5n.com/rss/"
+  },
+  {
+    "name": "Olé (Deportes)",
+    "url": "https://www.ole.com.ar/rss/ultimas-noticias/"
+  },
+  {
+    "name": "TyC Sports (Últimas)",
+    "url": "https://www.tycsports.com/rss/ultimas-noticias.xml"
   }
 ]
