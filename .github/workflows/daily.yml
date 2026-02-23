@@ -9,6 +9,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -16,35 +17,39 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install --no-cache-dir -r requirements.txt
-        
+
       - name: Show installed versions
         run: |
           python -c "import openai; print('openai version:', openai.__version__)"
           python -c "import httpx; print('httpx version:', httpx.__version__)"
-          
-      - name: Network check (OpenAI)
-        run: 'python -c "import socket; host=''api.openai.com''; print(''DNS'', socket.gethostbyname(host)); print(''OK'')"' 
-        
-      - name: Curl check OpenAI
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      # Проверка DNS для Groq
+      - name: Network check (Groq)
         run: |
-          echo "Testing connection..."
-          curl -v https://api.openai.com/v1/models \
-            -H "Authorization: Bearer $OPENAI_API_KEY"
-            
+          python -c "import socket; host='api.groq.com'; print('DNS:', socket.gethostbyname(host)); print('OK')"
+
+      # Проверка API Groq
+      - name: Curl check Groq
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          echo "Testing Groq connection..."
+          curl -v https://api.groq.com/openai/v1/models \
+            -H "Authorization: Bearer $GROQ_API_KEY"
+
       - name: Run bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: llama-3.1-8b-instant
         run: python bot.py
-        
+
       - name: Commit state
         run: |
           git config user.name "github-actions"
