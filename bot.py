@@ -115,10 +115,30 @@ RUBRIC_ORDER = [
 ]
 
 ARG_HINTS = [
-    "argentina", "argentino", "buenos aires", "caba", "amba",
+     # страна / прилагательные
+    "argentina", "argentino", "argentina",
+
+    # столица и агломерация
+    "buenos aires", "caba", "amba", "gba",
+
+    # провинции/города (часто встречаются в локальных новостях)
     "córdoba", "cordoba", "rosario", "mendoza", "la plata",
     "santa fe", "tucumán", "tucuman", "salta", "neuquén", "neuquen",
-    "milei", "casa rosada", "congreso", "banco central", "indec",
+    "san juan", "san luis", "chaco", "misiones", "corrientes",
+    "entre ríos", "entre rios", "río negro", "rio negro",
+    "chubut", "santa cruz", "tierra del fuego", "ushuaia",
+    "mar del plata", "bahía blanca", "bahia blanca",
+
+    # политика / институты
+    "milei", "casa rosada", "gobierno", "presidente",
+    "congreso", "senado", "diputados", "boletín oficial", "boletin oficial",
+
+    # экономика / регуляторы
+    "indec", "banco central", "bcra", "afip", "anmat",
+
+    # аргентинские маркеры в новостях
+    "subte", "colectivo", "tren roca", "tren mitre", "tren sarmiento",
+    "aerolineas argentinas", "ypf", "mercado libre", "edenor", "edesur",
 ]
 
 
@@ -320,10 +340,11 @@ def summarize_to_ru(title: str, snippet: str) -> str:
             {
                 "role": "system",
                 "content": (
-                    "Ты редактор новостей. Входной текст на испанском (Аргентина). "
-                    "Сделай краткую выжимку на русском языке. "
+                    "Ты редактор и переводчик новостей. Входной текст на испанском (Аргентина). "
+                    "Сделай понятную и интересную выжимку на русском языке. "
                     "Стиль: нейтральный, фактологичный, без оценки и клише. "
-                    "Длина: 1–2 предложения. Не добавляй фактов, которых нет во входном тексте."
+                    "Пиши просто, как для обычных людей. "
+                    "Длина: 2-3 предложения. Не добавляй фактов или идей, которых нет во входном тексте."
                 ),
             },
             {"role": "user", "content": base},
