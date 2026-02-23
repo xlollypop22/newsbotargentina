@@ -2,11 +2,10 @@ name: Daily Argentina News Digest
 
 on:
   schedule:
-    # 09:00 Buenos Aires (UTC-3) = 12:00 UTC
-    - cron: "0 12 * * *"
+    # 10:00 Buenos Aires (UTC-3) = 13:00 UTC
+    - cron: "0 13 * * *"
   workflow_dispatch:
 
-# Нужно, чтобы шаг Commit state мог пушить state.json
 permissions:
   contents: write
 
@@ -34,19 +33,25 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: llama-3.1-8b-instant
 
-          # --- Настройки рубрик / горячего / фильтра ---
+          # --- Настройки ---
           HOT_HOURS: "6"
-          HOT_MAX: "2"
-          MAX_PER_RUBRIC: "2"
           ARG_FILTER: "1"
 
           # --- Лимиты отбора новостей ---
-          TOTAL_LIMIT: "10"
-          PER_FEED_SCAN: "15"
+          TOTAL_LIMIT: "120"
+          PER_FEED_SCAN: "40"
 
-          # --- Твой новый лимит публикации: 4 новости максимум ---
-          # (если в bot.py ты используешь этот env — оставь)
-          MAX_POST_ITEMS: "4"
+          # --- Диапазон публикации (твой текущий бот-код использует эти переменные) ---
+          MIN_NEWS: "3"
+          MAX_NEWS: "6"
+
+          # (опционально) если используешь второй файл источников
+          FEEDS_FILE: "feeds.json"
+          FEEDS_EXTRA_FILE: "feeds_extra.json"
+
+          # (опционально) лимит текста под Telegram
+          TG_TEXT_LIMIT: "3900"
+          MAX_SUMMARY_CHARS: "260"
         run: python bot.py
 
       - name: Commit state
