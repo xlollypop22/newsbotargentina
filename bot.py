@@ -6,7 +6,16 @@ from openai import OpenAI
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHANNEL = os.environ["TELEGRAM_CHANNEL"]
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+if not GROQ_API_KEY:
+    raise RuntimeError("GROQ_API_KEY is empty. Check GitHub Secrets.")
+
+# Groq — OpenAI-compatible endpoint
+client = OpenAI(
+    api_key=GROQ_API_KEY,
+    base_url="https://api.groq.com/openai/v1",
+)
 
 TOTAL_LIMIT = int(os.environ.get("TOTAL_LIMIT", "5"))
 PER_FEED_SCAN = int(os.environ.get("PER_FEED_SCAN", "10"))
@@ -15,7 +24,6 @@ MAX_SUMMARY_CHARS = int(os.environ.get("MAX_SUMMARY_CHARS", "280"))
 FEEDS_FILE = "feeds.json"
 STATE_FILE = "state.json"
 
-client = OpenAI(api_key=OPENAI_API_KEY)
 
 def load_json(path, default):
     try:
@@ -24,22 +32,30 @@ def load_json(path, default):
     except FileNotFoundError:
         return default
 
+
 def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+
 def tg_send_message(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    r = requests.post(url, json={
-        "chat_id": TELEGRAM_CHANNEL,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }, timeout=30)
+    r = requests.post(
+        url,
+        json={
+            "chat_id": TELEGRAM_CHANNEL,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        },
+        timeout=30,
+    )
     r.raise_for_status()
+
 
 def html_escape(s: str) -> str:
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 
 def pick_time(entry) -> float:
     for key in ("published", "updated", "created"):
@@ -50,10 +66,32 @@ def pick_time(entry) -> float:
                 pass
     return time.time()
 
+
 def clean_text(s: str) -> str:
     s = (s or "").strip()
     s = re.sub(r"\s+", " ", s)
     return s
+
+
+def _call_groq_chat(messages, model: str, max_retries: int = 3):
+    # простой ретрай на временные ошибки/лимиты
+    for attempt in range(max_retries):
+        try:
+            return client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.2,
+            )
+        except Exception as e:
+            msg = str(e)
+            # грубая эвристика: 429/5xx/timeout
+            if attempt < max_retries - 1 and (
+                "429" in msg or "Rate limit" in msg or "timeout" in msg or "5" in msg
+            ):
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+
 
 def summarize_to_ru(title: str, snippet: str) -> str:
     title = clean_text(title)
@@ -61,8 +99,13 @@ def summarize_to_ru(title: str, snippet: str) -> str:
 
     base = f"Заголовок: {title}\nТекст: {snippet}" if snippet else f"Заголовок: {title}"
 
-    resp = client.chat.completions.create(
-        model="gpt-5-mini",
+    # ✅ Groq модели (выбери одну):
+    # - "llama-3.3-70b-versatile" (лучше качество, медленнее/дороже)
+    # - "llama-3.1-8b-instant"   (быстрее/дешевле)
+    model = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+
+    resp = _call_groq_chat(
+        model=model,
         messages=[
             {
                 "role": "system",
@@ -81,6 +124,7 @@ def summarize_to_ru(title: str, snippet: str) -> str:
     if len(text) > MAX_SUMMARY_CHARS:
         text = text[: MAX_SUMMARY_CHARS - 1].rstrip() + "…"
     return text
+
 
 def main():
     feeds = load_json(FEEDS_FILE, [])
@@ -137,6 +181,7 @@ def main():
 
     state["seen_links"] = (state.get("seen_links", []) + new_links)[-2000:]
     save_json(STATE_FILE, state)
+
 
 if __name__ == "__main__":
     main()
