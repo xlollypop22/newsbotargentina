@@ -1,6 +1,6 @@
 import os, json, time, re
 from collections import defaultdict
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 
 import feedparser
 import requests
@@ -24,25 +24,31 @@ client = OpenAI(
 
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 
-TOTAL_LIMIT = int(os.environ.get("TOTAL_LIMIT", "15"))         # сколько новостей взять в кандидаты (до фильтров)
-PER_FEED_SCAN = int(os.environ.get("PER_FEED_SCAN", "20"))     # сколько записей читать из каждого RSS
-MAX_SUMMARY_CHARS = int(os.environ.get("MAX_SUMMARY_CHARS", "280"))
+FEEDS_FILE = os.environ.get("FEEDS_FILE", "feeds.json")
+STATE_FILE = os.environ.get("STATE_FILE", "state.json")
+
+TOTAL_LIMIT = int(os.environ.get("TOTAL_LIMIT", "30"))        # кандидаты до фильтров
+PER_FEED_SCAN = int(os.environ.get("PER_FEED_SCAN", "25"))    # записей из RSS на фид
 
 HOT_HOURS = int(os.environ.get("HOT_HOURS", "6"))
 
-ARG_FILTER = os.environ.get("ARG_FILTER", "1") == "1"          # 1 = строго Аргентина
+ARG_FILTER = os.environ.get("ARG_FILTER", "1") == "1"         # 1 = строго Аргентина
 
-FEEDS_FILE = "feeds.json"
-STATE_FILE = "state.json"
+HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "18"))
 
-HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "20"))       # таймаут на загрузку страниц (для og:image)
+# Отбор новостей и “сбалансированность”
+MAX_NEWS = int(os.environ.get("MAX_NEWS", "5"))               # всего новостей в посте
+MIN_PER_TARGET = int(os.environ.get("MIN_PER_TARGET", "1"))   # хотим хотя бы по 1 из каждой целевой рубрики (если есть)
 
-# Адаптивное число новостей в посте
-MIN_NEWS = int(os.environ.get("MIN_NEWS", "2"))
-MAX_NEWS = int(os.environ.get("MAX_NEWS", "5"))
+# Ограничения Telegram caption (для фото) — максимально безопасно держать < 900–950
+CAPTION_LIMIT = int(os.environ.get("CAPTION_LIMIT", "950"))
+
+# Короткая выжимка, чтобы помещаться в caption
+MAX_SUMMARY_CHARS = int(os.environ.get("MAX_SUMMARY_CHARS", "170"))  # 1 предложение, компактно
 
 
 # ----------------- RUBRICS -----------------
+# Оставил расширенные словари, но целевые рубрики ниже.
 
 RUBRICS = {
     "🔥 Горячее": [
@@ -63,80 +69,45 @@ RUBRICS = {
         "oposición", "oposicion", "peronismo", "kirchnerismo", "pro", "ucr",
         "kicillof", "massa", "bullrich", "macri", "larreta", "elecciones", "balotaje", "campaña"
     ],
-    "🏢 Бизнес / компании": [
+    "🏢 Бизнес": [
         "empresa", "empresas", "negocio", "negocios", "inversión", "inversion",
         "startup", "fintech", "banco", "bancos", "mercado libre", "ypf",
         "telecom", "personal", "movistar", "claro", "aerolíneas", "aerolineas",
-        "industria", "comercio"
+        "industria", "comercio", "inmobiliaria", "energía", "energia"
     ],
-    "⚖️ Суд / безопасность": [
-        "policía", "policia", "crimen", "delito", "robo", "homicidio", "asesinato",
-        "detenido", "detuvieron", "allanamiento", "operativo", "narco", "drogas",
-        "juez", "jueza", "fiscal", "tribunal", "causa", "condena", "juicio",
-        "seguridad", "gendarmería", "gendarmeria", "prefectura"
+    "🎭 Культура": [
+        "cultura", "cine", "teatro", "música", "musica", "festival", "libro",
+        "feria del libro", "arte", "exposición", "exposicion", "concierto", "museo"
     ],
+    "⚽ Спорт": [
+        "fútbol", "futbol", "river", "boca", "selección", "seleccion", "messi",
+        "copa", "liga", "mundial", "afa", "racing", "independiente", "san lorenzo",
+        "tenis", "nba", "f1", "gran premio"
+    ],
+    # резерв
     "🌎 Общество": [
         "salud", "hospital", "educación", "educacion", "escuela", "universidad",
         "paro", "huelga", "sindicato", "cgt", "protesta", "marcha",
         "transporte", "subte", "colectivo", "tren", "vivienda", "alquiler",
-        "inmuebles", "piquete", "servicios", "luz", "gas", "agua", "anmat"
-    ],
-    "🧪 Наука / технологии": [
-        "tecnología", "tecnologia", "ia", "inteligencia artificial", "software",
-        "ciber", "ciberseguridad", "datos", "internet", "satélite", "satelite",
-        "investigación", "investigacion", "conicet"
-    ],
-    "🌦 Погода / ЧС": [
-        "tormenta", "lluvia", "granizo", "ola de calor", "ola de frio",
-        "inundación", "inundacion", "alerta meteorológica", "alerta meteorologica",
-        "evacuados", "incendio", "sismo"
-    ],
-    "🎭 Культура": [
-        "cultura", "cine", "teatro", "música", "musica", "festival", "libro",
-        "feria del libro", "arte", "exposición", "exposicion", "concierto"
-    ],
-    "⚽ Спорт": [
-        "fútbol", "futbol", "river", "boca", "selección", "seleccion", "messi",
-        "copa", "liga", "mundial", "afa", "racing", "independiente", "san lorenzo"
+        "servicios", "luz", "gas", "agua", "anmat"
     ],
 }
 
-RUBRIC_ORDER = [
-    "🔥 Горячее",
-    "💰 Экономика",
-    "🏛 Политика",
-    "🏢 Бизнес / компании",
-    "⚖️ Суд / безопасность",
-    "🌎 Общество",
-    "🧪 Наука / технологии",
-    "🌦 Погода / ЧС",
-    "🎭 Культура",
-    "⚽ Спорт",
-]
+# ЦЕЛЕВЫЕ рубрики, которые ты просишь (в таком порядке в посте)
+TARGET_RUBRICS = ["🏛 Политика", "💰 Экономика", "🏢 Бизнес", "🎭 Культура", "⚽ Спорт"]
+
 
 ARG_HINTS = [
-     # страна / прилагательные
-    "argentina", "argentino", "argentina",
-
-    # столица и агломерация
-    "buenos aires", "caba", "amba", "gba",
-
-    # провинции/города (часто встречаются в локальных новостях)
+    "argentina", "argentino", "buenos aires", "caba", "amba", "gba",
     "córdoba", "cordoba", "rosario", "mendoza", "la plata",
     "santa fe", "tucumán", "tucuman", "salta", "neuquén", "neuquen",
     "san juan", "san luis", "chaco", "misiones", "corrientes",
     "entre ríos", "entre rios", "río negro", "rio negro",
     "chubut", "santa cruz", "tierra del fuego", "ushuaia",
     "mar del plata", "bahía blanca", "bahia blanca",
-
-    # политика / институты
     "milei", "casa rosada", "gobierno", "presidente",
     "congreso", "senado", "diputados", "boletín oficial", "boletin oficial",
-
-    # экономика / регуляторы
     "indec", "banco central", "bcra", "afip", "anmat",
-
-    # аргентинские маркеры в новостях
     "subte", "colectivo", "tren roca", "tren mitre", "tren sarmiento",
     "aerolineas argentinas", "ypf", "mercado libre", "edenor", "edesur",
 ]
@@ -216,17 +187,14 @@ def is_argentina_related(title: str, summary: str, link: str) -> bool:
 
     t = (title + " " + summary + " " + (link or "")).lower()
 
-    # если ссылка явно аргентинская (Infobae / La Nación), то пропускаем,
-    # даже если в тексте нет наших ключевых слов
-    if ("infobae.com" in t) or ("lanacion.com.ar" in t):
+    # домены-«якоря» (можешь расширить своим списком)
+    if any(d in t for d in ("infobae.com", "lanacion.com.ar", "clarin.com", "perfil.com")):
         return True
 
-    # иначе — обычная проверка по подсказкам
     return any(h in t for h in ARG_HINTS)
 
 
 def is_hot(ts: float, title: str, summary: str) -> bool:
-    # свежее за HOT_HOURS часов — горячее
     if (time.time() - ts) <= HOT_HOURS * 3600:
         return True
     t = (title + " " + summary).lower()
@@ -234,21 +202,22 @@ def is_hot(ts: float, title: str, summary: str) -> bool:
 
 
 def detect_rubric(ts: float, title: str, summary: str) -> str:
-    if is_hot(ts, title, summary):
-        return "🔥 Горячее"
+    # горячее не используем как отдельную рубрику в финальном посте,
+    # но используем для приоритезации внутри целевых рубрик
     t = (title + " " + summary).lower()
-    for rubric in RUBRIC_ORDER:
-        if rubric == "🔥 Горячее":
-            continue
-        keys = RUBRICS.get(rubric, [])
-        if any(k in t for k in keys):
+
+    # сначала целевые
+    for rubric in TARGET_RUBRICS:
+        if any(k in t for k in RUBRICS.get(rubric, [])):
             return rubric
+
+    # потом всё остальное — пусть упадёт в "Общество"
     return "🌎 Общество"
 
 
 # ----------------- IMAGE EXTRACTION (RSS -> HTML og:image) -----------------
 
-UA = "Mozilla/5.0 (compatible; ArgentinaDigestBot/1.0; +https://github.com/)"
+UA = "Mozilla/5.0 (compatible; ArgentinaDigestBot/1.1; +https://github.com/)"
 
 def extract_image_from_rss(entry) -> Optional[str]:
     if hasattr(entry, "media_content"):
@@ -326,11 +295,13 @@ def _call_groq_chat(messages, model: str, max_retries: int = 3):
                 model=model,
                 messages=messages,
                 temperature=0.2,
-                max_tokens=320,
+                max_tokens=180,
             )
         except Exception as e:
             msg = str(e)
-            if attempt < max_retries - 1 and ("429" in msg or "Rate limit" in msg or "timeout" in msg or "5" in msg):
+            if attempt < max_retries - 1 and (
+                "429" in msg or "Rate limit" in msg or "timeout" in msg or "5" in msg
+            ):
                 time.sleep(1.5 * (attempt + 1))
                 continue
             raise
@@ -349,18 +320,15 @@ def summarize_to_ru(title: str, snippet: str) -> str:
                 "role": "system",
                 "content": (
                     "Ты редактор и переводчик новостей. Входной текст на испанском (Аргентина). "
-                    "Сделай понятную и интересную выжимку на русском языке. "
-                    "Стиль: нейтральный, фактологичный, без оценки и клише. "
-                    "Пиши просто, как для обычных людей. "
-                    "Длина: 2-3 предложения. Не добавляй фактов или идей, которых нет во входном тексте."
+                    "Сделай выжимку на русском: 1 или 2 небольших предложений (без оценки, без клише). "
+                    "Не добавляй много фактов. Пиши максимально компактно и понятным языком."
                 ),
             },
             {"role": "user", "content": base},
         ],
     )
 
-    text = (resp.choices[0].message.content or "").strip()
-    text = clean_text(text)
+    text = clean_text((resp.choices[0].message.content or "").strip())
     if len(text) > MAX_SUMMARY_CHARS:
         text = text[: MAX_SUMMARY_CHARS - 1].rstrip() + "…"
     return text
@@ -369,6 +337,62 @@ def summarize_to_ru(title: str, snippet: str) -> str:
 # ----------------- MAIN -----------------
 
 Item = Tuple[float, str, str, str, str, Optional[str]]  # (ts, source, title, link, summary, image_url)
+
+def score_item(ts: float, title: str, summary: str) -> int:
+    """
+    Простая приоритезация: свежесть + «горячее».
+    """
+    s = 0
+    if is_hot(ts, title, summary):
+        s += 3
+    # свежесть: ближе к сейчас — выше
+    age_hours = max(0.0, (time.time() - ts) / 3600.0)
+    if age_hours <= 6:
+        s += 3
+    elif age_hours <= 24:
+        s += 2
+    elif age_hours <= 72:
+        s += 1
+    return s
+
+
+def build_single_caption(selected: List[Tuple[str, Item]]) -> str:
+    """
+    Собираем ОДИН caption под фото. Должно влезть в CAPTION_LIMIT.
+    Формат: заголовок + рубрики + 1-2 строки на новость.
+    """
+    lines: List[str] = ["<b>Аргентина — дайджест</b>"]
+
+    current = None
+    for rubric, (ts, source, title, link, summary, image_url) in selected:
+        if rubric != current:
+            lines.append("")
+            lines.append(f"<b>{html_escape(rubric)}</b>")
+            current = rubric
+
+        ru = summarize_to_ru(title, summary)
+
+        # В caption места мало: заголовок — кликабельный, затем 1 короткая фраза.
+        lines.append(f"• <a href=\"{html_escape(link)}\">{html_escape(clean_text(title))}</a>")
+        if ru:
+            lines.append(f"  {html_escape(ru)}")
+
+        # мягкий разделитель
+        lines.append("")
+
+        # если уже близко к лимиту — стоп
+        if len("\n".join(lines)) > CAPTION_LIMIT:
+            # откатываем последние строки и ставим многоточие
+            while lines and len("\n".join(lines)) > (CAPTION_LIMIT - 10):
+                lines.pop()
+            lines.append("…")
+            break
+
+    text = "\n".join(lines).strip()
+    if len(text) > CAPTION_LIMIT:
+        text = text[: CAPTION_LIMIT - 1].rstrip() + "…"
+    return text
+
 
 def main():
     feeds = load_json(FEEDS_FILE, [])
@@ -397,117 +421,104 @@ def main():
 
             entries.append((ts, name, title, link, summary, image_url))
 
+        # свежие сверху
         entries.sort(key=lambda x: x[0], reverse=True)
         candidates.extend(entries)
 
+    # общий пул — свежие сверху
     candidates.sort(key=lambda x: x[0], reverse=True)
-    picked = candidates[:TOTAL_LIMIT]
+    candidates = candidates[:TOTAL_LIMIT]
 
-    if not picked:
-        tg_send_message("Сегодня новых новостей по выбранным источникам не нашёл.")
-        return
+    # фильтр Аргентины
+    filtered: List[Item] = []
+    for it in candidates:
+        ts, source, title, link, summary, image_url = it
+        if is_argentina_related(title, summary, link):
+            filtered.append(it)
 
-    # --- группировка по рубрикам ---
-    grouped = defaultdict(list)
-    for ts, source, title, link, summary, image_url in picked:
-        if not is_argentina_related(title, summary, link):
-            continue
-        rubric = detect_rubric(ts, title, summary)
-        grouped[rubric].append((ts, source, title, link, summary, image_url))
-
-    if not any(grouped.values()):
+    if not filtered:
         tg_send_message("Сегодня по выбранным источникам не нашёл новостей про Аргентину.")
         return
 
-    # -------- АДАПТИВНЫЙ ОТБОР MIN_NEWS–MAX_NEWS --------
+    # группировка по рубрикам + сортировка внутри рубрик по (score, ts)
+    grouped: Dict[str, List[Item]] = defaultdict(list)
+    for it in filtered:
+        ts, source, title, link, summary, image_url = it
+        r = detect_rubric(ts, title, summary)
+        grouped[r].append(it)
+
+    for r, items in grouped.items():
+        items.sort(key=lambda x: (score_item(x[0], x[2], x[4]), x[0]), reverse=True)
+
+    # -------- СБАЛАНСИРОВАННЫЙ ОТБОР --------
     selected: List[Tuple[str, Item]] = []
 
-    # 1) горячие первыми
-    hot_items = grouped.get("🔥 Горячее", [])
-    hot_items.sort(key=lambda x: x[0], reverse=True)
-    for item in hot_items:
-        if len(selected) >= MAX_NEWS:
-            break
-        selected.append(("🔥 Горячее", item))
+    # 1) возьмём минимум по 1 из каждой целевой рубрики (если есть)
+    for r in TARGET_RUBRICS:
+        items = grouped.get(r, [])
+        take = min(MIN_PER_TARGET, len(items))
+        for i in range(take):
+            selected.append((r, items[i]))
 
-    # 2) затем рубрики по приоритету
-    for rubric in RUBRIC_ORDER:
-        if rubric == "🔥 Горячее":
-            continue
-        items = grouped.get(rubric, [])
-        items.sort(key=lambda x: x[0], reverse=True)
-        for item in items:
+    # 2) добиваем до MAX_NEWS лучшими оставшимися из целевых рубрик
+    if len(selected) < MAX_NEWS:
+        used_links = {it[3] for _, it in selected}
+        pool: List[Tuple[str, Item]] = []
+        for r in TARGET_RUBRICS:
+            for it in grouped.get(r, []):
+                if it[3] not in used_links:
+                    pool.append((r, it))
+
+        pool.sort(key=lambda x: (score_item(x[1][0], x[1][2], x[1][4]), x[1][0]), reverse=True)
+
+        for r, it in pool:
             if len(selected) >= MAX_NEWS:
                 break
-            selected.append((rubric, item))
-        if len(selected) >= MAX_NEWS:
-            break
+            selected.append((r, it))
+            used_links.add(it[3])
 
-    # 3) добираем до MIN_NEWS из общего пула, если вдруг мало
-    if len(selected) < MIN_NEWS:
-        flat: List[Tuple[str, Item]] = []
+    # 3) если целевых не хватило — добираем из “Общество” (или любых) по свежести/score
+    if len(selected) < MAX_NEWS:
+        used_links = {it[3] for _, it in selected}
+        pool2: List[Tuple[str, Item]] = []
         for r, items in grouped.items():
             for it in items:
-                flat.append((r, it))
-        flat.sort(key=lambda x: x[1][0], reverse=True)
-
-        existing = set((r, it[3]) for r, it in selected)  # (rubric, link)
-        for r, it in flat:
-            key = (r, it[3])
-            if key in existing:
-                continue
-            selected.append((r, it))
-            existing.add(key)
-            if len(selected) >= MIN_NEWS:
+                if it[3] not in used_links:
+                    pool2.append((r, it))
+        pool2.sort(key=lambda x: (score_item(x[1][0], x[1][2], x[1][4]), x[1][0]), reverse=True)
+        for r, it in pool2:
+            if len(selected) >= MAX_NEWS:
                 break
+            selected.append((r, it))
+            used_links.add(it[3])
 
     if not selected:
-        tg_send_message("Сегодня по выбранным источникам не нашёл новостей про Аргентину.")
+        tg_send_message("Сегодня не удалось собрать подборку.")
         return
 
-    # -------- ФОРМИРОВАНИЕ ПОСТА --------
-    lines = ["<b>Аргентина — ежедневная выжимка</b>\n"]
-    new_links: List[str] = []
+    # упорядочим в посте строго по TARGET_RUBRICS (остальные — в конце)
+    order_index = {r: i for i, r in enumerate(TARGET_RUBRICS)}
+    selected.sort(key=lambda x: (order_index.get(x[0], 999), -x[1][0]))
 
-    current_rubric = None
-    for rubric, (ts, source, title, link, summary, image_url) in selected:
-        if rubric != current_rubric:
-            lines.append(f"<b>{html_escape(rubric)}</b>")
-            current_rubric = rubric
-
-        ru = summarize_to_ru(title, summary)
-        lines.append(
-            f"• <a href=\"{html_escape(link)}\">{html_escape(title)}</a> "
-            f"<i>({html_escape(source)})</i>"
-        )
-        if ru:
-            lines.append(f"  {html_escape(ru)}")
-        lines.append("")
-        new_links.append(link)
-
-    text = "\n".join(lines).strip()
-    if len(text) > 3800:
-        text = text[:3790] + "…"
-
-    # ---- Variant B: one lead image (берём первую картинку среди выбранных) ----
+    # -------- ОДИН ПОСТ В TG: ФОТО + CAPTION --------
+    # берём первую доступную картинку среди выбранных
     lead_image = None
-    for rubric, (ts, source, title, link, summary, image_url) in selected:
-        if image_url:
-            lead_image = image_url
+    for _, it in selected:
+        if it[5]:
+            lead_image = it[5]
             break
 
-    if lead_image:
-        # caption limit ~1024, оставим запас
-        if len(text) <= 950:
-            tg_send_photo(lead_image, text)
-        else:
-            short_caption = "<b>Аргентина — ежедневная выжимка</b>\n\nСводка ниже 👇"
-            tg_send_photo(lead_image, short_caption)
-            tg_send_message(text)
-    else:
-        tg_send_message(text)
+    caption = build_single_caption(selected)
 
-    state["seen_links"] = (state.get("seen_links", []) + new_links)[-2000:]
+    if lead_image:
+        tg_send_photo(lead_image, caption)
+    else:
+        # если ни у одной новости нет картинки — придётся без фото (телега иначе не умеет)
+        tg_send_message(caption)
+
+    # сохраняем seen
+    new_links = [it[3] for _, it in selected]
+    state["seen_links"] = (state.get("seen_links", []) + new_links)[-2500:]
     save_json(STATE_FILE, state)
 
 
