@@ -1,8 +1,15 @@
 name: Daily Argentina News Digest
+
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    # 09:00 Buenos Aires (UTC-3) = 12:00 UTC
+    - cron: "0 12 * * *"
   workflow_dispatch:
+
+# Нужно, чтобы шаг Commit state мог пушить state.json
+permissions:
+  contents: write
+
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -20,25 +27,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install --no-cache-dir -r requirements.txt
 
-      - name: Show installed versions
-        run: |
-          python -c "import openai; print('openai version:', openai.__version__)"
-          python -c "import httpx; print('httpx version:', httpx.__version__)"
-
-      # Проверка DNS для Groq
-      - name: Network check (Groq)
-        run: |
-          python -c "import socket; host='api.groq.com'; print('DNS:', socket.gethostbyname(host)); print('OK')"
-
-      # Проверка API Groq
-      - name: Curl check Groq
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: |
-          echo "Testing Groq connection..."
-          curl -v https://api.groq.com/openai/v1/models \
-            -H "Authorization: Bearer $GROQ_API_KEY"
-
       - name: Run bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -46,16 +34,19 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: llama-3.1-8b-instant
 
-          # --- Горячее + рубрики ---
-          HOT_HOURS: "6"          # новости за последние 6 часов = "🔥 Горячее"
-          HOT_MAX: "2"            # максимум горячих новостей в посте
-          MAX_PER_RUBRIC: "2"     # максимум новостей в каждой рубрике
-          ARG_FILTER: "1"         # 1 = строго про Аргентину, 0 = без фильтра
+          # --- Настройки рубрик / горячего / фильтра ---
+          HOT_HOURS: "6"
+          HOT_MAX: "2"
+          MAX_PER_RUBRIC: "2"
+          ARG_FILTER: "1"
 
-          # опционально: общий лимит (если в bot.py читаешь эти env)
-          TOTAL_LIMIT: "10"       # сколько кандидатов отобрать перед рубрикатором
-          PER_FEED_SCAN: "15"     # сколько записей читать из каждого RSS
+          # --- Лимиты отбора новостей ---
+          TOTAL_LIMIT: "10"
+          PER_FEED_SCAN: "15"
 
+          # --- Твой новый лимит публикации: 4 новости максимум ---
+          # (если в bot.py ты используешь этот env — оставь)
+          MAX_POST_ITEMS: "4"
         run: python bot.py
 
       - name: Commit state
