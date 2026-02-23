@@ -1,6 +1,6 @@
 import os, json, time, re
 from collections import defaultdict
-from typing import Optional
+from typing import Optional, List, Tuple
 
 import feedparser
 import requests
@@ -24,13 +24,11 @@ client = OpenAI(
 
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 
-TOTAL_LIMIT = int(os.environ.get("TOTAL_LIMIT", "10"))         # сколько новостей взять всего (до рубрик)
-PER_FEED_SCAN = int(os.environ.get("PER_FEED_SCAN", "15"))     # сколько записей читать из каждого RSS
+TOTAL_LIMIT = int(os.environ.get("TOTAL_LIMIT", "15"))         # сколько новостей взять в кандидаты (до фильтров)
+PER_FEED_SCAN = int(os.environ.get("PER_FEED_SCAN", "20"))     # сколько записей читать из каждого RSS
 MAX_SUMMARY_CHARS = int(os.environ.get("MAX_SUMMARY_CHARS", "280"))
 
 HOT_HOURS = int(os.environ.get("HOT_HOURS", "6"))
-HOT_MAX = int(os.environ.get("HOT_MAX", "2"))
-MAX_PER_RUBRIC = int(os.environ.get("MAX_PER_RUBRIC", "2"))
 
 ARG_FILTER = os.environ.get("ARG_FILTER", "1") == "1"          # 1 = строго Аргентина
 
@@ -38,6 +36,11 @@ FEEDS_FILE = "feeds.json"
 STATE_FILE = "state.json"
 
 HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "20"))       # таймаут на загрузку страниц (для og:image)
+
+# Адаптивное число новостей в посте
+MIN_NEWS = int(os.environ.get("MIN_NEWS", "2"))
+MAX_NEWS = int(os.environ.get("MAX_NEWS", "6"))
+
 
 # ----------------- RUBRICS -----------------
 
@@ -195,6 +198,7 @@ def is_argentina_related(title: str, summary: str, link: str = "") -> bool:
 
 
 def is_hot(ts: float, title: str, summary: str) -> bool:
+    # свежее за HOT_HOURS часов — горячее
     if (time.time() - ts) <= HOT_HOURS * 3600:
         return True
     t = (title + " " + summary).lower()
@@ -219,7 +223,6 @@ def detect_rubric(ts: float, title: str, summary: str) -> str:
 UA = "Mozilla/5.0 (compatible; ArgentinaDigestBot/1.0; +https://github.com/)"
 
 def extract_image_from_rss(entry) -> Optional[str]:
-    # 1) media:content
     if hasattr(entry, "media_content"):
         try:
             for m in entry.media_content:
@@ -229,7 +232,6 @@ def extract_image_from_rss(entry) -> Optional[str]:
         except Exception:
             pass
 
-    # 2) links/enclosures
     if hasattr(entry, "links"):
         try:
             for l in entry.links:
@@ -241,7 +243,6 @@ def extract_image_from_rss(entry) -> Optional[str]:
         except Exception:
             pass
 
-    # 3) img src in summary html
     summary = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
     m = re.search(r'<img[^>]+src="([^"]+)"', summary)
     if m:
@@ -264,8 +265,6 @@ def extract_og_image_from_html(url: str) -> Optional[str]:
     except Exception:
         return None
 
-    # ищем og:image, twitter:image
-    # (делаем простым regex без bs4, чтобы не добавлять зависимостей)
     patterns = [
         r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
         r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
@@ -287,7 +286,6 @@ def best_image(entry, link: str) -> Optional[str]:
     img = extract_image_from_rss(entry)
     if img:
         return img
-    # fallback: HTML og:image
     return extract_og_image_from_html(link)
 
 
@@ -341,18 +339,20 @@ def summarize_to_ru(title: str, snippet: str) -> str:
 
 # ----------------- MAIN -----------------
 
+Item = Tuple[float, str, str, str, str, Optional[str]]  # (ts, source, title, link, summary, image_url)
+
 def main():
     feeds = load_json(FEEDS_FILE, [])
     state = load_json(STATE_FILE, {"seen_links": []})
     seen = set(state.get("seen_links", []))
 
-    candidates = []
+    candidates: List[Item] = []
 
     for f in feeds:
         name, url = f["name"], f["url"]
         d = feedparser.parse(url)
 
-        entries = []
+        entries: List[Item] = []
         for e in d.entries[:PER_FEED_SCAN]:
             link = getattr(e, "link", None)
             title = getattr(e, "title", "").strip()
@@ -364,8 +364,6 @@ def main():
                 continue
 
             ts = pick_time(e)
-
-            # картинка: RSS -> HTML og:image
             image_url = best_image(e, link)
 
             entries.append((ts, name, title, link, summary, image_url))
@@ -380,6 +378,7 @@ def main():
         tg_send_message("Сегодня новых новостей по выбранным источникам не нашёл.")
         return
 
+    # --- группировка по рубрикам ---
     grouped = defaultdict(list)
     for ts, source, title, link, summary, image_url in picked:
         if not is_argentina_related(title, summary, link):
@@ -391,47 +390,79 @@ def main():
         tg_send_message("Сегодня по выбранным источникам не нашёл новостей про Аргентину.")
         return
 
-    lines = ["<b>Аргентина — ежедневная выжимка</b>\n"]
-    new_links = []
+    # -------- АДАПТИВНЫЙ ОТБОР MIN_NEWS–MAX_NEWS --------
+    selected: List[Tuple[str, Item]] = []
 
-    hot_left = HOT_MAX
+    # 1) горячие первыми
+    hot_items = grouped.get("🔥 Горячее", [])
+    hot_items.sort(key=lambda x: x[0], reverse=True)
+    for item in hot_items:
+        if len(selected) >= MAX_NEWS:
+            break
+        selected.append(("🔥 Горячее", item))
 
+    # 2) затем рубрики по приоритету
     for rubric in RUBRIC_ORDER:
-        items = grouped.get(rubric, [])
-        if not items:
-            continue
-
-        items.sort(key=lambda x: x[0], reverse=True)
-
         if rubric == "🔥 Горячее":
-            items = items[:hot_left]
-            hot_left -= len(items)
-            if not items:
+            continue
+        items = grouped.get(rubric, [])
+        items.sort(key=lambda x: x[0], reverse=True)
+        for item in items:
+            if len(selected) >= MAX_NEWS:
+                break
+            selected.append((rubric, item))
+        if len(selected) >= MAX_NEWS:
+            break
+
+    # 3) добираем до MIN_NEWS из общего пула, если вдруг мало
+    if len(selected) < MIN_NEWS:
+        flat: List[Tuple[str, Item]] = []
+        for r, items in grouped.items():
+            for it in items:
+                flat.append((r, it))
+        flat.sort(key=lambda x: x[1][0], reverse=True)
+
+        existing = set((r, it[3]) for r, it in selected)  # (rubric, link)
+        for r, it in flat:
+            key = (r, it[3])
+            if key in existing:
                 continue
-        else:
-            items = items[:MAX_PER_RUBRIC]
+            selected.append((r, it))
+            existing.add(key)
+            if len(selected) >= MIN_NEWS:
+                break
 
-        lines.append(f"<b>{html_escape(rubric)}</b>")
+    if not selected:
+        tg_send_message("Сегодня по выбранным источникам не нашёл новостей про Аргентину.")
+        return
 
-        for ts, source, title, link, summary, image_url in items:
-            ru = summarize_to_ru(title, summary)
-            lines.append(
-                f"• <a href=\"{html_escape(link)}\">{html_escape(title)}</a> "
-                f"<i>({html_escape(source)})</i>"
-            )
-            if ru:
-                lines.append(f"  {html_escape(ru)}")
-            new_links.append(link)
+    # -------- ФОРМИРОВАНИЕ ПОСТА --------
+    lines = ["<b>Аргентина — ежедневная выжимка</b>\n"]
+    new_links: List[str] = []
 
+    current_rubric = None
+    for rubric, (ts, source, title, link, summary, image_url) in selected:
+        if rubric != current_rubric:
+            lines.append(f"<b>{html_escape(rubric)}</b>")
+            current_rubric = rubric
+
+        ru = summarize_to_ru(title, summary)
+        lines.append(
+            f"• <a href=\"{html_escape(link)}\">{html_escape(title)}</a> "
+            f"<i>({html_escape(source)})</i>"
+        )
+        if ru:
+            lines.append(f"  {html_escape(ru)}")
         lines.append("")
+        new_links.append(link)
 
     text = "\n".join(lines).strip()
     if len(text) > 3800:
         text = text[:3790] + "…"
 
-    # ---- Variant B: one lead image ----
+    # ---- Variant B: one lead image (берём первую картинку среди выбранных) ----
     lead_image = None
-    for ts, source, title, link, summary, image_url in picked:
+    for rubric, (ts, source, title, link, summary, image_url) in selected:
         if image_url:
             lead_image = image_url
             break
