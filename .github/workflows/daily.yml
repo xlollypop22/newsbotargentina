@@ -35,9 +35,6 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          HTTP_PROXY: ""
-          HTTPS_PROXY: ""
-          NO_PROXY: ""
         run: python bot.py
         
       - name: Commit state
