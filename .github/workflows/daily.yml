@@ -28,17 +28,8 @@ jobs:
           python -c "import httpx; print('httpx version:', httpx.__version__)"
           
       - name: Network check (OpenAI)
-        run: |
-          python - << 'PY'
-          import socket
-          host="api.openai.com"
-          try:
-            print("DNS:", socket.gethostbyname(host))
-            print("OK: DNS resolves")
-          except Exception as e:
-            print("DNS FAIL:", e)
-            raise
-          PY  
+        run: 'python -c "import socket; host=''api.openai.com''; print(''DNS'', socket.gethostbyname(host)); print(''OK'')"'
+     
       - name: Run bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
