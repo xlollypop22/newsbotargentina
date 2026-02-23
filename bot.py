@@ -61,9 +61,9 @@ def summarize_to_ru(title: str, snippet: str) -> str:
 
     base = f"Заголовок: {title}\nТекст: {snippet}" if snippet else f"Заголовок: {title}"
 
-    resp = client.responses.create(
+    resp = client.chat.completions.create(
         model="gpt-5-mini",
-        input=[
+        messages=[
             {
                 "role": "system",
                 "content": (
@@ -76,7 +76,7 @@ def summarize_to_ru(title: str, snippet: str) -> str:
         ],
     )
 
-    text = (resp.output_text or "").strip()
+    text = (resp.choices[0].message.content or "").strip()
     text = clean_text(text)
     if len(text) > MAX_SUMMARY_CHARS:
         text = text[: MAX_SUMMARY_CHARS - 1].rstrip() + "…"
