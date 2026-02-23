@@ -1,5 +1,4 @@
 name: Daily Argentina News Digest
-
 on:
   schedule:
     # 12:00 UTC = 09:00 Buenos Aires (UTC-3)
