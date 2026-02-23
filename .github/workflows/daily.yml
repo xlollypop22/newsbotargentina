@@ -1,4 +1,5 @@
 name: Daily Argentina News Digest
+
 on:
   schedule:
     # 12:00 UTC = 09:00 Buenos Aires (UTC-3)
@@ -45,10 +46,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           HTTP_PROXY: ""
           HTTPS_PROXY: ""
-          http_proxy: ""
-          https_proxy: ""
           NO_PROXY: ""
-          no_proxy: ""
         run: python bot.py
         
       - name: Commit state
