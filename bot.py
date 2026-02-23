@@ -210,10 +210,18 @@ def pick_time(entry) -> float:
     return time.time()
 
 
-def is_argentina_related(title: str, summary: str, link: str = "") -> bool:
+def is_argentina_related(title: str, summary: str, link: str) -> bool:
     if not ARG_FILTER:
         return True
+
     t = (title + " " + summary + " " + (link or "")).lower()
+
+    # если ссылка явно аргентинская (Infobae / La Nación), то пропускаем,
+    # даже если в тексте нет наших ключевых слов
+    if ("infobae.com" in t) or ("lanacion.com.ar" in t):
+        return True
+
+    # иначе — обычная проверка по подсказкам
     return any(h in t for h in ARG_HINTS)
 
 
