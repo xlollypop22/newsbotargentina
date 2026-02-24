@@ -25,30 +25,28 @@ client = OpenAI(
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 
 FEEDS_FILE = os.environ.get("FEEDS_FILE", "feeds.json")
-FEEDS_EXTRA_FILE = os.environ.get("FEEDS_EXTRA_FILE", "feeds_extra.json")  # <-- новый файл
+FEEDS_EXTRA_FILE = os.environ.get("FEEDS_EXTRA_FILE", "feeds_extra.json")
 STATE_FILE = os.environ.get("STATE_FILE", "state.json")
 
-TOTAL_LIMIT = int(os.environ.get("TOTAL_LIMIT", "120"))       # кандидаты до фильтров (увеличили)
-PER_FEED_SCAN = int(os.environ.get("PER_FEED_SCAN", "40"))    # записей из RSS на фид (увеличили)
+TOTAL_LIMIT = int(os.environ.get("TOTAL_LIMIT", "120"))
+PER_FEED_SCAN = int(os.environ.get("PER_FEED_SCAN", "40"))
 
 HOT_HOURS = int(os.environ.get("HOT_HOURS", "6"))
 ARG_FILTER = os.environ.get("ARG_FILTER", "1") == "1"
 HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "18"))
 
-# Диапазон новостей в подборке
-MIN_NEWS = int(os.environ.get("MIN_NEWS", "3"))               # минимум 3
-MAX_NEWS = int(os.environ.get("MAX_NEWS", "6"))               # максимум 6
+MIN_NEWS = int(os.environ.get("MIN_NEWS", "3"))
+MAX_NEWS = int(os.environ.get("MAX_NEWS", "6"))
 MIN_PER_TARGET = int(os.environ.get("MIN_PER_TARGET", "1"))
 
-# Телега: text limit 4096; оставим запас
 TG_TEXT_LIMIT = int(os.environ.get("TG_TEXT_LIMIT", "3900"))
-
-# Выжимка (текстом можно чуть больше)
 MAX_SUMMARY_CHARS = int(os.environ.get("MAX_SUMMARY_CHARS", "260"))
+
+# Кликабельная иконка для ссылки (вариант A)
+LINK_ICON = os.environ.get("LINK_ICON", "↗").strip() or "↗"
 
 
 # ----------------- RUBRICS -----------------
-# Расширил ключи, чтобы рубрика определялась чаще.
 
 RUBRICS = {
     "🔥 Горячее": [
@@ -97,7 +95,6 @@ RUBRICS = {
         "newell", "rosario central", "estudiantes", "gimnasia", "velez", "huracán", "huracan",
         "tenis", "nba", "f1", "gran premio", "boxeo", "pumas", "rugby"
     ],
-    # резерв
     "🌎 Общество": [
         "salud", "hospital", "educación", "educacion", "escuela", "universidad",
         "paro", "huelga", "sindicato", "cgt", "cta", "protesta", "marcha",
@@ -110,11 +107,8 @@ RUBRICS = {
 TARGET_RUBRICS = ["🏛 Политика", "💰 Экономика", "🏢 Бизнес", "🎭 Культура", "⚽ Спорт"]
 
 
-# ----------------- ARGENTINA FILTER (расширенный и “умнее”) -----------------
+# ----------------- ARGENTINA FILTER -----------------
 
-# “Аргентинские домены” НЕ дают авто-True.
-# Но дают “бонус”: для таких доменов достаточно слабого сигнала в тексте/URL,
-# чтобы не отваливались новости, где нет явного “Argentina” в заголовке.
 ARG_DOMAINS = (
     "lanacion.com.ar",
     "clarin.com",
@@ -127,15 +121,11 @@ ARG_DOMAINS = (
     "c5n.com",
     "ole.com.ar",
     "tycsports.com",
-    "telesurtv.net",  # опционально; если не нужно — убери
+    "telesurtv.net",
 )
 
-# Сильные гео/институты/топонимы/бренды/термины
 ARG_STRONG_HINTS = [
-    # страна/маркер
     "argentina", "argentino", "argentinos", "república argentina", "republica argentina",
-
-    # города/регионы (много, чтобы не терять локальные новости)
     "buenos aires", "caba", "amba", "gran buenos aires", "gba",
     "la plata", "mar del plata", "bahía blanca", "bahia blanca",
     "córdoba", "cordoba", "rosario", "mendoza", "salta", "tucumán", "tucuman",
@@ -145,15 +135,11 @@ ARG_STRONG_HINTS = [
     "quilmes", "avellaneda", "lanús", "lanus", "morón", "moron", "san isidro",
     "vicente lópez", "vicente lopez", "san martín", "san martin",
     "lomas de zamora", "la matanza", "tigre", "pilar", "escobar",
-
-    # институты/регуляторы/гос-структуры
     "casa rosada", "congreso", "senado", "diputados",
     "boletín oficial", "boletin oficial",
     "bcra", "banco central", "indec", "afip", "arba", "anmat", "anses",
     "prefectura", "gendarmería", "gendarmeria",
     "ministerio", "secretaría", "secretaria",
-
-    # аргентинские “локальные” штуки, часто в новостях
     "subte", "colectivo", "metrobús", "metrobus",
     "tren roca", "tren mitre", "tren sarmiento", "tren belgrano",
     "aerolineas argentinas", "ypf", "edenor", "edesur",
@@ -161,10 +147,9 @@ ARG_STRONG_HINTS = [
     "prepagas", "obra social",
     "dólar blue", "dolar blue", "cepo",
     "paritarias", "piquete", "cgt",
-    "quilombo"  # иногда в заголовках колонок/мнений
+    "quilombo"
 ]
 
-# Слабые сигналы (даём шанс, но только с ARG доменом)
 ARG_WEAK_HINTS = [
     "milei", "kicillof", "massa", "bullrich", "macri",
     "boca", "river", "afa",
@@ -194,10 +179,6 @@ def load_json(path, default):
 
 
 def load_feeds() -> List[Dict[str, str]]:
-    """
-    Загружаем feeds.json + feeds_extra.json (если есть).
-    Дедуп по url.
-    """
     base = load_json(FEEDS_FILE, [])
     extra = load_json(FEEDS_EXTRA_FILE, [])
     all_feeds = []
@@ -283,12 +264,6 @@ def _is_arg_domain(link: str) -> bool:
 
 
 def is_argentina_related(title: str, summary: str, link: str) -> bool:
-    """
-    Улучшенный фильтр:
-    - Если есть strong hints / URL markers -> True.
-    - Если домен аргентинский и есть weak hints -> True.
-    - Иначе False (когда ARG_FILTER включён).
-    """
     if not ARG_FILTER:
         return True
 
@@ -297,16 +272,13 @@ def is_argentina_related(title: str, summary: str, link: str) -> bool:
     link = link or ""
     blob = (title + " " + summary + " " + link).lower()
 
-    # 1) сильные маркеры
     if any(h in blob for h in ARG_STRONG_HINTS):
         return True
 
-    # 2) явные секции/гео в URL
     url_l = link.lower()
     if any(m in url_l for m in ARG_URL_MARKERS):
         return True
 
-    # 3) мягкое правило: если домен аргентинский, достаточно слабого сигнала
     if _is_arg_domain(link) and any(h in blob for h in ARG_WEAK_HINTS):
         return True
 
@@ -328,7 +300,7 @@ def detect_rubric(ts: float, title: str, summary: str) -> str:
     return "🌎 Общество"
 
 
-# ----------------- IMAGE EXTRACTION (RSS -> HTML og:image) -----------------
+# ----------------- IMAGE EXTRACTION -----------------
 
 UA = "Mozilla/5.0 (compatible; ArgentinaDigestBot/1.4; +https://github.com/)"
 
@@ -464,6 +436,12 @@ def score_item(ts: float, title: str, summary: str) -> int:
 
 
 def build_text_message(selected: List[Tuple[str, Item]]) -> str:
+    """
+    Вариант A: заголовок БЕЗ ссылки, а ссылка "вшита" в кликабельную иконку после выжимки.
+    Пример:
+      • Заголовок
+        Выжимка… ↗ (Источник)
+    """
     lines: List[str] = [
         "<b>Аргентина — подборка новостей за день</b>",
         "Подборка новостей за день ниже 👇",
@@ -478,12 +456,17 @@ def build_text_message(selected: List[Tuple[str, Item]]) -> str:
 
         ru = summarize_to_ru(title, summary)
 
-        lines.append(
-            f"• <a href=\"{html_escape(link)}\">{html_escape(clean_text(title))}</a> "
-            f"<i>({html_escape(source)})</i>"
-        )
+        # Заголовок без ссылки (не громоздко)
+        lines.append(f"• {html_escape(clean_text(title))}")
+
+        # Кликабельная иконка на первоисточник
+        icon_link = f"<a href=\"{html_escape(link)}\">{html_escape(LINK_ICON)}</a>"
+
         if ru:
-            lines.append(f"  {html_escape(ru)}")
+            lines.append(f"  {html_escape(ru)} {icon_link} <i>({html_escape(source)})</i>")
+        else:
+            lines.append(f"  {icon_link} <i>({html_escape(source)})</i>")
+
         lines.append("")
 
         if len("\n".join(lines)) > TG_TEXT_LIMIT:
@@ -533,27 +516,24 @@ def main():
     candidates.sort(key=lambda x: x[0], reverse=True)
     candidates = candidates[:TOTAL_LIMIT]
 
-    # фильтр Аргентины (умный)
+    # фильтр Аргентины
     filtered: List[Item] = []
     for it in candidates:
         ts, source, title, link, summary, image_url = it
         if is_argentina_related(title, summary, link):
             filtered.append(it)
 
-    # Никаких "нет подходящих новостей": делаем graceful fallback.
-    # Если фильтр слишком строгий — отдадим новости с арг-доменов, даже если маркеров мало.
+    # fallback: если фильтр строгий
     if len(filtered) < MIN_NEWS:
         fallback: List[Item] = []
         for it in candidates:
             if _is_arg_domain(it[3]):  # link
                 fallback.append(it)
-        # убираем дубль ссылок
         seen_links = set(x[3] for x in filtered)
         for it in fallback:
             if it[3] not in seen_links:
                 filtered.append(it)
                 seen_links.add(it[3])
-        # сортируем снова
         filtered.sort(key=lambda x: x[0], reverse=True)
 
     if not filtered:
@@ -572,7 +552,7 @@ def main():
     # -------- СБАЛАНСИРОВАННЫЙ ОТБОР 3–6 --------
     selected: List[Tuple[str, Item]] = []
 
-    # 1) по 1 из каждой целевой рубрики, если есть
+    # 1) по 1 из каждой целевой рубрики
     for r in TARGET_RUBRICS:
         items = grouped.get(r, [])
         take = min(MIN_PER_TARGET, len(items))
@@ -612,7 +592,7 @@ def main():
             selected.append((r, it))
             used_links.add(it[3])
 
-    # финальная страховка: если вдруг все рубрики пустые, просто возьмем top по свежести
+    # финальная страховка
     if len(selected) < MIN_NEWS:
         flat: List[Tuple[str, Item]] = []
         for r, items in grouped.items():
@@ -634,7 +614,6 @@ def main():
     if len(selected) > MAX_NEWS:
         selected = selected[:MAX_NEWS]
 
-    # порядок вывода: целевые рубрики сначала
     order_index = {r: i for i, r in enumerate(TARGET_RUBRICS)}
     selected.sort(key=lambda x: (order_index.get(x[0], 999), -x[1][0]))
 
