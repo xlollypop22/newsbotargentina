@@ -42,11 +42,7 @@ MIN_PER_TARGET = int(os.environ.get("MIN_PER_TARGET", "1"))
 TG_TEXT_LIMIT = int(os.environ.get("TG_TEXT_LIMIT", "3900"))
 MAX_SUMMARY_CHARS = int(os.environ.get("MAX_SUMMARY_CHARS", "260"))
 
-# One post with image (caption is limited by Telegram)
-CAPTION_LIMIT = int(os.environ.get("TG_CAPTION_LIMIT", "1000"))  # safer than 1024
-USE_SINGLE_POST = os.environ.get("USE_SINGLE_POST", "1") == "1"  # 1 = photo+caption
-
-# Clickable icon for the link
+# Link icon
 LINK_ICON = os.environ.get("LINK_ICON", "↗").strip() or "↗"
 
 
@@ -172,7 +168,7 @@ ARG_URL_MARKERS = [
 ]
 
 
-# ----------------- JSON / TELEGRAM -----------------
+# ----------------- JSON / FEEDS -----------------
 
 def load_json(path, default):
     try:
@@ -180,6 +176,11 @@ def load_json(path, default):
             return json.load(f)
     except FileNotFoundError:
         return default
+
+
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def load_feeds() -> List[Dict[str, str]]:
@@ -204,45 +205,38 @@ def load_feeds() -> List[Dict[str, str]]:
     return all_feeds
 
 
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+# ----------------- TELEGRAM -----------------
 
-
-def tg_send_message(text: str):
+def tg_send_message(text: str, reply_to_message_id: Optional[int] = None) -> int:
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    r = requests.post(
-        url,
-        json={
-            "chat_id": TELELEGRAM_CHANNEL_SAFE(),
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=30,
-    )
+    payload = {
+        "chat_id": TELEGRAM_CHANNEL,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    if reply_to_message_id is not None:
+        payload["reply_to_message_id"] = reply_to_message_id
+
+    r = requests.post(url, json=payload, timeout=30)
     r.raise_for_status()
+    data = r.json()
+    return int(data["result"]["message_id"])
 
 
-def tg_send_photo(photo_url: str, caption: str = ""):
+def tg_send_photo(photo_url: str, caption: str = "") -> int:
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    r = requests.post(
-        url,
-        data={
-            "chat_id": TELELEGRAM_CHANNEL_SAFE(),
-            "photo": photo_url,
-            "caption": caption,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=30,
-    )
+    payload = {
+        "chat_id": TELEGRAM_CHANNEL,
+        "photo": photo_url,
+        "caption": caption,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    r = requests.post(url, data=payload, timeout=30)
     r.raise_for_status()
-
-
-def TELELEGRAM_CHANNEL_SAFE() -> str:
-    # some users pass @channelname, others pass numeric id; both are valid
-    return TELEGRAM_CHANNEL
+    data = r.json()
+    return int(data["result"]["message_id"])
 
 
 # ----------------- HELPERS -----------------
@@ -320,7 +314,7 @@ def detect_rubric(ts: float, title: str, summary: str) -> str:
 
 # ----------------- IMAGE EXTRACTION -----------------
 
-UA = "Mozilla/5.0 (compatible; ArgentinaDigestBot/1.4; +https://github.com/)"
+UA = "Mozilla/5.0 (compatible; ArgentinaDigestBot/1.6; +https://github.com/)"
 
 def extract_image_from_rss(entry) -> Optional[str]:
     if hasattr(entry, "media_content"):
@@ -455,6 +449,16 @@ def score_item(ts: float, title: str, summary: str) -> int:
 
 
 def build_text_message(selected: List[Tuple[str, Item]], limit: int) -> str:
+    """
+    Формат:
+    <b>Главные новости Аргентины сегодня</b>
+
+    🏛 Политика
+
+    Описание... <a href="...">↗</a>
+
+    ...
+    """
     lines: List[str] = [
         "<b>Главные новости Аргентины сегодня</b>",
         "",
@@ -463,7 +467,6 @@ def build_text_message(selected: List[Tuple[str, Item]], limit: int) -> str:
     current = None
     for rubric, (ts, source, title, link, summary, image_url) in selected:
         if rubric != current:
-            # blank line between rubrics (except first)
             if current is not None:
                 lines.append("")
             lines.append(f"{html_escape(rubric.strip())}")
@@ -476,36 +479,19 @@ def build_text_message(selected: List[Tuple[str, Item]], limit: int) -> str:
         href = html_attr_escape(link)
         icon = html_escape(LINK_ICON)
 
-        # No bullet, just sentence like in your example
-        lines.append(f"{html_escape(ru)} <a href=\"{href}\">{icon}</a>")
+        line = f"{html_escape(ru)} <a href=\"{href}\">{icon}</a>"
 
-        text = "\n".join(lines).strip()
-        if len(text) > limit:
-            # remove last news line and end cleanly
-            lines.pop()
-            lines.append("…")
+        tentative = "\n".join(lines + [line, ""]).strip()
+        if len(tentative) > limit:
             break
+
+        lines.append(line)
+        lines.append("")  # пустая строка между новостями (чтобы не слипалось)
 
     text = "\n".join(lines).strip()
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
     return text
-
-
-def fit_selected_to_limit(selected: List[Tuple[str, Item]], limit: int) -> List[Tuple[str, Item]]:
-    """
-    For caption mode: reduce number of items until the text fits (no ugly truncation).
-    """
-    if not selected:
-        return selected
-    cur = selected[:]
-    while cur:
-        text = build_text_message(cur, limit=limit)
-        if len(text) <= limit and not text.endswith("…"):
-            return cur
-        # drop the last item and try again
-        cur = cur[:-1]
-    return selected[:1]
 
 
 # ----------------- MAIN -----------------
@@ -637,22 +623,17 @@ def main():
             lead_image = it[5]
             break
 
-    # If single post (photo+caption), ensure we fit caption limit by reducing items
-    if USE_SINGLE_POST and lead_image:
-        selected_fit = fit_selected_to_limit(selected, limit=CAPTION_LIMIT)
-        caption = build_text_message(selected_fit, limit=CAPTION_LIMIT)
-        tg_send_photo(lead_image, caption)
-        selected_for_state = selected_fit
+    # -------- send: photo then full digest as reply --------
+    digest_text = build_text_message(selected, limit=TG_TEXT_LIMIT)
+
+    if lead_image:
+        photo_mid = tg_send_photo(lead_image, "<b>Главные новости Аргентины сегодня</b>")
+        tg_send_message(digest_text, reply_to_message_id=photo_mid)
     else:
-        # fallback: (optional) photo then full text
-        if lead_image:
-            tg_send_photo(lead_image, "<b>Главные новости Аргентины сегодня</b>")
-        text = build_text_message(selected, limit=TG_TEXT_LIMIT)
-        tg_send_message(text)
-        selected_for_state = selected
+        tg_send_message(digest_text)
 
     # save seen
-    new_links = [it[3] for _, it in selected_for_state]
+    new_links = [it[3] for _, it in selected]
     state["seen_links"] = (state.get("seen_links", []) + new_links)[-3000:]
     save_json(STATE_FILE, state)
 
