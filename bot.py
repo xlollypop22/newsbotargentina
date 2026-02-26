@@ -42,7 +42,11 @@ MIN_PER_TARGET = int(os.environ.get("MIN_PER_TARGET", "1"))
 TG_TEXT_LIMIT = int(os.environ.get("TG_TEXT_LIMIT", "3900"))
 MAX_SUMMARY_CHARS = int(os.environ.get("MAX_SUMMARY_CHARS", "260"))
 
-# Кликабельная иконка для ссылки (вариант A)
+# One post with image (caption is limited by Telegram)
+CAPTION_LIMIT = int(os.environ.get("TG_CAPTION_LIMIT", "1000"))  # safer than 1024
+USE_SINGLE_POST = os.environ.get("USE_SINGLE_POST", "1") == "1"  # 1 = photo+caption
+
+# Clickable icon for the link
 LINK_ICON = os.environ.get("LINK_ICON", "↗").strip() or "↗"
 
 
@@ -210,7 +214,7 @@ def tg_send_message(text: str):
     r = requests.post(
         url,
         json={
-            "chat_id": TELEGRAM_CHANNEL,
+            "chat_id": TELELEGRAM_CHANNEL_SAFE(),
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
@@ -225,7 +229,7 @@ def tg_send_photo(photo_url: str, caption: str = ""):
     r = requests.post(
         url,
         data={
-            "chat_id": TELEGRAM_CHANNEL,
+            "chat_id": TELELEGRAM_CHANNEL_SAFE(),
             "photo": photo_url,
             "caption": caption,
             "parse_mode": "HTML",
@@ -236,11 +240,17 @@ def tg_send_photo(photo_url: str, caption: str = ""):
     r.raise_for_status()
 
 
+def TELELEGRAM_CHANNEL_SAFE() -> str:
+    # some users pass @channelname, others pass numeric id; both are valid
+    return TELEGRAM_CHANNEL
+
+
 # ----------------- HELPERS -----------------
 
 def html_escape(s: str) -> str:
     s = s or ""
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 
 def html_attr_escape(s: str) -> str:
     s = s or ""
@@ -412,7 +422,8 @@ def summarize_to_ru(title: str, snippet: str) -> str:
                 "content": (
                     "Ты редактор и переводчик новостей. Входной текст на испанском (Аргентина). "
                     "Сделай выжимку на русском: 1–2 предложения, нейтрально и фактологично, без оценки и клише. "
-                    "Не добавляй фактов, которых нет в исходном тексте."
+                    "Не добавляй фактов, которых нет в исходном тексте. "
+                    "Не упоминай источник и не добавляй заголовок — только выжимка."
                 ),
             },
             {"role": "user", "content": base},
@@ -443,9 +454,6 @@ def score_item(ts: float, title: str, summary: str) -> int:
     return s
 
 
-CAPTION_LIMIT = int(os.environ.get("TG_CAPTION_LIMIT", "1000"))  # безопаснее 1024
-USE_SINGLE_POST = os.environ.get("USE_SINGLE_POST", "1") == "1"  # 1 = фото+caption
-
 def build_text_message(selected: List[Tuple[str, Item]], limit: int) -> str:
     lines: List[str] = [
         "<b>Главные новости Аргентины сегодня</b>",
@@ -455,29 +463,26 @@ def build_text_message(selected: List[Tuple[str, Item]], limit: int) -> str:
     current = None
     for rubric, (ts, source, title, link, summary, image_url) in selected:
         if rubric != current:
-            lines.append(f"<b>{html_escape(rubric.strip())}</b>")
+            # blank line between rubrics (except first)
+            if current is not None:
+                lines.append("")
+            lines.append(f"{html_escape(rubric.strip())}")
+            lines.append("")
             current = rubric
 
         ru = summarize_to_ru(title, summary)
-        ru = clean_text(ru)
+        ru = clean_text(ru) or clean_text(title)
 
-        # Фолбэк: если модель вернула пусто — всё равно покажем коротко по title
-        if not ru:
-            ru = clean_text(title)
-
-        icon = html_escape(LINK_ICON)
         href = html_attr_escape(link)
+        icon = html_escape(LINK_ICON)
 
-        # • выжимка ↗ (иконка кликабельная)
-        lines.append(f"• {html_escape(ru)} <a href=\"{href}\">{icon}</a>")
-
-        # пустая строка между новостями (можно убрать, если хочешь плотнее)
-        # lines.append("")
+        # No bullet, just sentence like in your example
+        lines.append(f"{html_escape(ru)} <a href=\"{href}\">{icon}</a>")
 
         text = "\n".join(lines).strip()
         if len(text) > limit:
-            # если не влезло — откатываем последнюю новость и ставим многоточие
-            lines.pop()  # last item line
+            # remove last news line and end cleanly
+            lines.pop()
             lines.append("…")
             break
 
@@ -485,6 +490,23 @@ def build_text_message(selected: List[Tuple[str, Item]], limit: int) -> str:
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
     return text
+
+
+def fit_selected_to_limit(selected: List[Tuple[str, Item]], limit: int) -> List[Tuple[str, Item]]:
+    """
+    For caption mode: reduce number of items until the text fits (no ugly truncation).
+    """
+    if not selected:
+        return selected
+    cur = selected[:]
+    while cur:
+        text = build_text_message(cur, limit=limit)
+        if len(text) <= limit and not text.endswith("…"):
+            return cur
+        # drop the last item and try again
+        cur = cur[:-1]
+    return selected[:1]
+
 
 # ----------------- MAIN -----------------
 
@@ -521,18 +543,18 @@ def main():
     candidates.sort(key=lambda x: x[0], reverse=True)
     candidates = candidates[:TOTAL_LIMIT]
 
-    # фильтр Аргентины
+    # Argentina filter
     filtered: List[Item] = []
     for it in candidates:
         ts, source, title, link, summary, image_url = it
         if is_argentina_related(title, summary, link):
             filtered.append(it)
 
-    # fallback: если фильтр строгий
+    # fallback if too strict
     if len(filtered) < MIN_NEWS:
         fallback: List[Item] = []
         for it in candidates:
-            if _is_arg_domain(it[3]):  # link
+            if _is_arg_domain(it[3]):
                 fallback.append(it)
         seen_links = set(x[3] for x in filtered)
         for it in fallback:
@@ -554,10 +576,10 @@ def main():
     for r, items in grouped.items():
         items.sort(key=lambda x: (score_item(x[0], x[2], x[4]), x[0]), reverse=True)
 
-    # -------- СБАЛАНСИРОВАННЫЙ ОТБОР 3–6 --------
+    # -------- Balanced selection --------
     selected: List[Tuple[str, Item]] = []
 
-    # 1) по 1 из каждой целевой рубрики
+    # 1) min per target rubric
     for r in TARGET_RUBRICS:
         items = grouped.get(r, [])
         take = min(MIN_PER_TARGET, len(items))
@@ -566,7 +588,7 @@ def main():
 
     used_links = {it[3] for _, it in selected}
 
-    # 2) добиваем до MAX_NEWS лучшими оставшимися из целевых
+    # 2) fill up to MAX_NEWS with best from target rubrics
     if len(selected) < MAX_NEWS:
         pool: List[Tuple[str, Item]] = []
         for r in TARGET_RUBRICS:
@@ -582,7 +604,7 @@ def main():
             selected.append((r, it))
             used_links.add(it[3])
 
-    # 3) если всё ещё < MIN_NEWS — добираем из любых рубрик
+    # 3) if still < MIN_NEWS, take from any rubric
     if len(selected) < MIN_NEWS:
         pool2: List[Tuple[str, Item]] = []
         for r, items in grouped.items():
@@ -597,21 +619,6 @@ def main():
             selected.append((r, it))
             used_links.add(it[3])
 
-    # финальная страховка
-    if len(selected) < MIN_NEWS:
-        flat: List[Tuple[str, Item]] = []
-        for r, items in grouped.items():
-            for it in items:
-                flat.append((r, it))
-        flat.sort(key=lambda x: x[1][0], reverse=True)
-        for r, it in flat:
-            if len(selected) >= MIN_NEWS:
-                break
-            if it[3] in used_links:
-                continue
-            selected.append((r, it))
-            used_links.add(it[3])
-
     if not selected:
         tg_send_message("Сегодня по выбранным источникам не удалось собрать подборку.")
         return
@@ -619,28 +626,33 @@ def main():
     if len(selected) > MAX_NEWS:
         selected = selected[:MAX_NEWS]
 
+    # keep rubric order
     order_index = {r: i for i, r in enumerate(TARGET_RUBRICS)}
     selected.sort(key=lambda x: (order_index.get(x[0], 999), -x[1][0]))
 
-    # -------- отправка: фото отдельно, текст отдельно --------
+    # pick lead image
     lead_image = None
     for _, it in selected:
         if it[5]:
             lead_image = it[5]
             break
 
-    if lead_image and USE_SINGLE_POST:
-    caption = build_text_message(selected, limit=CAPTION_LIMIT)
-    tg_send_photo(lead_image, caption)
-else:
-    # старый режим: фото отдельно (опционально) + длинный текст отдельно
-    if lead_image:
-        tg_send_photo(lead_image, "Главные новости Аргентины сегодня")
-    text = build_text_message(selected, limit=TG_TEXT_LIMIT)
-    tg_send_message(text)
+    # If single post (photo+caption), ensure we fit caption limit by reducing items
+    if USE_SINGLE_POST and lead_image:
+        selected_fit = fit_selected_to_limit(selected, limit=CAPTION_LIMIT)
+        caption = build_text_message(selected_fit, limit=CAPTION_LIMIT)
+        tg_send_photo(lead_image, caption)
+        selected_for_state = selected_fit
+    else:
+        # fallback: (optional) photo then full text
+        if lead_image:
+            tg_send_photo(lead_image, "<b>Главные новости Аргентины сегодня</b>")
+        text = build_text_message(selected, limit=TG_TEXT_LIMIT)
+        tg_send_message(text)
+        selected_for_state = selected
 
-    # сохраняем seen
-    new_links = [it[3] for _, it in selected]
+    # save seen
+    new_links = [it[3] for _, it in selected_for_state]
     state["seen_links"] = (state.get("seen_links", []) + new_links)[-3000:]
     save_json(STATE_FILE, state)
 
