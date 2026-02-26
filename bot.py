@@ -239,7 +239,15 @@ def tg_send_photo(photo_url: str, caption: str = ""):
 # ----------------- HELPERS -----------------
 
 def html_escape(s: str) -> str:
-    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    s = s or ""
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def html_attr_escape(s: str) -> str:
+    s = s or ""
+    return (s.replace("&", "&amp;")
+            .replace('"', "&quot;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;"))
 
 
 def clean_text(s: str) -> str:
@@ -435,51 +443,48 @@ def score_item(ts: float, title: str, summary: str) -> int:
     return s
 
 
-def build_text_message(selected: List[Tuple[str, Item]]) -> str:
-    """
-    Вариант A: заголовок БЕЗ ссылки, а ссылка "вшита" в кликабельную иконку после выжимки.
-    Пример:
-      • Заголовок
-        Выжимка… ↗ (Источник)
-    """
+CAPTION_LIMIT = int(os.environ.get("TG_CAPTION_LIMIT", "1000"))  # безопаснее 1024
+USE_SINGLE_POST = os.environ.get("USE_SINGLE_POST", "1") == "1"  # 1 = фото+caption
+
+def build_text_message(selected: List[Tuple[str, Item]], limit: int) -> str:
     lines: List[str] = [
-        "<b>Аргентина — подборка новостей за день</b>",
-        "Подборка новостей за день ниже 👇",
+        "<b>Главные новости Аргентины сегодня</b>",
         "",
     ]
 
     current = None
     for rubric, (ts, source, title, link, summary, image_url) in selected:
         if rubric != current:
-            lines.append(f"<b>{html_escape(rubric)}</b>")
+            lines.append(f"<b>{html_escape(rubric.strip())}</b>")
             current = rubric
 
         ru = summarize_to_ru(title, summary)
+        ru = clean_text(ru)
 
-        # Заголовок без ссылки (не громоздко)
-        lines.append(f"• {html_escape(clean_text(title))}")
+        # Фолбэк: если модель вернула пусто — всё равно покажем коротко по title
+        if not ru:
+            ru = clean_text(title)
 
-        # Кликабельная иконка на первоисточник
-        icon_link = f"<a href=\"{html_escape(link)}\">{html_escape(LINK_ICON)}</a>"
+        icon = html_escape(LINK_ICON)
+        href = html_attr_escape(link)
 
-        if ru:
-            lines.append(f"  {html_escape(ru)} {icon_link} <i>({html_escape(source)})</i>")
-        else:
-            lines.append(f"  {icon_link} <i>({html_escape(source)})</i>")
+        # • выжимка ↗ (иконка кликабельная)
+        lines.append(f"• {html_escape(ru)} <a href=\"{href}\">{icon}</a>")
 
-        lines.append("")
+        # пустая строка между новостями (можно убрать, если хочешь плотнее)
+        # lines.append("")
 
-        if len("\n".join(lines)) > TG_TEXT_LIMIT:
-            while lines and len("\n".join(lines)) > (TG_TEXT_LIMIT - 20):
-                lines.pop()
+        text = "\n".join(lines).strip()
+        if len(text) > limit:
+            # если не влезло — откатываем последнюю новость и ставим многоточие
+            lines.pop()  # last item line
             lines.append("…")
             break
 
     text = "\n".join(lines).strip()
-    if len(text) > TG_TEXT_LIMIT:
-        text = text[: TG_TEXT_LIMIT - 1].rstrip() + "…"
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
     return text
-
 
 # ----------------- MAIN -----------------
 
@@ -624,10 +629,14 @@ def main():
             lead_image = it[5]
             break
 
+    if lead_image and USE_SINGLE_POST:
+    caption = build_text_message(selected, limit=CAPTION_LIMIT)
+    tg_send_photo(lead_image, caption)
+else:
+    # старый режим: фото отдельно (опционально) + длинный текст отдельно
     if lead_image:
-        tg_send_photo(lead_image, "<b>Аргентина — дайджест</b>")
-
-    text = build_text_message(selected)
+        tg_send_photo(lead_image, "Главные новости Аргентины сегодня")
+    text = build_text_message(selected, limit=TG_TEXT_LIMIT)
     tg_send_message(text)
 
     # сохраняем seen
